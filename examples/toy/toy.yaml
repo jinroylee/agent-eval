@@ -1,0 +1,24 @@
+version: 1
+agent_type: plain
+
+datasets:
+  qa:
+    adapter: jsonl
+    path: examples/toy/toy.jsonl
+    field_map: {input: question, output: answer, expected: gold}
+
+suites:
+  response:
+    dataset: qa
+    target: {level: graph, selector: "*"}
+    metrics:
+      - {type: exact_match, name: exact_match}
+      - {type: regex_match, name: nonempty, params: {pattern: ".+"}}
+    gate:
+      thresholds: {exact_match: 0.6}
+      require_pass: [exact_match]
+
+# Runtime-critic thresholds (tau) are written here by `agent-eval calibrate` from an offline run.
+runtime_critic:
+  tiers: [deterministic]
+  tau: {}

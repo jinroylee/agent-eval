@@ -1,0 +1,36 @@
+version: 1
+agent_type: t2s
+
+defaults:
+  dialect: sqlite
+  # Explicit result-set comparison semantics (the documented silent-failure source for EX).
+  result_set_policy: {row_order: ignore, duplicates: keep, nulls: distinct, float_tolerance: 1.0e-6}
+
+datasets:
+  gold:
+    adapter: tabular
+    path: examples/t2s/gold.csv
+    format: csv
+    # "pred" is the agent output under test; "db" -> metadata.db_ref for execution grounding.
+    field_map: {input: question, output: pred, expected: gold, db_ref: db}
+
+suites:
+  search:                                   # = query correctness, gated on execution, not a judge
+    dataset: gold
+    target: {level: tool, selector: run_query, attach: observe}
+    metrics:
+      - {type: execution_accuracy, name: execution_accuracy}
+      - {type: soft_f1, name: soft_f1}
+      - {type: component_match, name: component_match}
+    gate:
+      thresholds: {execution_accuracy: 0.80}
+      require_pass: [execution_accuracy]
+      min_effect: 0.02
+
+# Deterministic runtime critic (AST validity + schema linking + dry-run execution).
+# `tau` is written here by `agent-eval calibrate` from an offline run.
+runtime_critic:
+  tiers: [deterministic]
+  max_retries: 2
+  fallback: abstain
+  tau: {}

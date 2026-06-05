@@ -1,0 +1,13 @@
+id,question,pred,gold,db
+q01,List all employee names ordered by employee id.,SELECT name FROM employee ORDER BY emp_id,SELECT name FROM employee ORDER BY emp_id,examples/t2s/sample.sqlite
+q02,Names of employees in the Engineering department.,SELECT e.name FROM employee e JOIN department d ON e.dept_id = d.dept_id WHERE d.name = 'Engineering',SELECT e.name FROM employee e JOIN department d ON e.dept_id = d.dept_id WHERE d.name = 'Engineering',examples/t2s/sample.sqlite
+q03,"Number of employees in each department, by department name.","SELECT d.name, COUNT(*) FROM employee e JOIN department d ON e.dept_id = d.dept_id GROUP BY d.name","SELECT d.name, COUNT(*) FROM employee e JOIN department d ON e.dept_id = d.dept_id GROUP BY d.name",examples/t2s/sample.sqlite
+q04,Total salary paid in each department id.,"SELECT dept_id, SUM(salary) FROM employee GROUP BY dept_id","SELECT dept_id, SUM(salary) FROM employee GROUP BY dept_id",examples/t2s/sample.sqlite
+q05,Average salary across all employees.,SELECT AVG(salary) FROM employee,SELECT AVG(salary) FROM employee,examples/t2s/sample.sqlite
+q06,Names of employees who have no manager.,SELECT name FROM employee WHERE manager_id IS NULL,SELECT name FROM employee WHERE manager_id IS NULL,examples/t2s/sample.sqlite
+q07,The name of the department with the highest budget.,SELECT name FROM department ORDER BY budget DESC LIMIT 1,SELECT name FROM department ORDER BY budget DESC LIMIT 1,examples/t2s/sample.sqlite
+q08,Names of employees earning more than 100000.,SELECT name FROM employee WHERE salary > 100000,SELECT name FROM employee WHERE salary > 100000,examples/t2s/sample.sqlite
+q09,Each employee name with their department name.,"SELECT e.name, d.name FROM employee e JOIN department d ON e.dept_id = d.dept_id","SELECT e.name, d.name FROM employee e JOIN department d ON e.dept_id = d.dept_id",examples/t2s/sample.sqlite
+q10,How many employees have no recorded salary?,SELECT COUNT(*) FROM employee WHERE salary IS NULL,SELECT COUNT(*) FROM employee WHERE salary IS NULL,examples/t2s/sample.sqlite
+q11,Department ids having more than 2 employees.,SELECT dept_id FROM employee GROUP BY dept_id HAVING COUNT(*) > 2,SELECT dept_id FROM employee GROUP BY dept_id HAVING COUNT(*) > 2,examples/t2s/sample.sqlite
+q12,Total budget across all departments.,SELECT SUM(budget) FROM department,SELECT SUM(budget) FROM department,examples/t2s/sample.sqlite

@@ -1,0 +1,5 @@
+{"question": "What is the capital of France?", "retrieved": ["d1", "d2", "d3"], "relevant": ["d1", "d2"]}
+{"question": "Who wrote Hamlet?", "retrieved": ["d5", "d6"], "relevant": ["d5"]}
+{"question": "What is the boiling point of water?", "retrieved": ["d7", "d8", "d9"], "relevant": ["d7", "d9"]}
+{"question": "When did the Apollo 11 land?", "retrieved": ["d10", "x", "y"], "relevant": ["d10", "d11"]}
+{"question": "What is the speed of light?", "retrieved": ["d12"], "relevant": ["d12"]}

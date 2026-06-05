@@ -1,0 +1,29 @@
+version: 1
+agent_type: rag
+
+datasets:
+  qa:
+    adapter: jsonl
+    path: examples/rag/rag.jsonl
+    # "retrieved" = ranked retrieved doc ids (the agent output); "relevant" = gold relevant ids.
+    field_map: {input: question, output: retrieved, expected: relevant}
+
+suites:
+  search:                                   # retrieval quality — caps downstream answer quality
+    dataset: qa
+    target: {level: node, selector: retrieve, attach: observe}
+    metrics:
+      - {type: recall_at_k, name: recall_at_k, params: {k: 5}}
+      - {type: mrr, name: mrr}
+      - {type: ndcg_at_k, name: ndcg_at_k, params: {k: 5}}
+    gate:
+      thresholds: {recall_at_k: 0.7}        # Recall@k is the hard search gate
+      require_pass: [recall_at_k]
+
+# Runtime critic: CRAG-style retrieval-sufficiency gate (re-retrieve if Recall@k too low)
+# + a semantic-entropy groundedness flag on the generated answer.
+runtime_critic:
+  tiers: [deterministic, uncertainty]
+  max_retries: 2
+  fallback: abstain
+  tau: {}
