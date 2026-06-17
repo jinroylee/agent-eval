@@ -3,12 +3,24 @@
 import json
 import xml.etree.ElementTree as ET
 
-from agent_eval.core.contracts import EvalContext
+from agent_eval.core.contracts import EvalContext, MetricResult, Tier
 from agent_eval.core.gate import GatePolicy
+from agent_eval.core.metric import BaseMetric
 from agent_eval.core.suite import Suite
-from agent_eval.metrics.deterministic_ import ExactMatch
 from agent_eval.offline import report as rep
 from agent_eval.offline.runner import evaluate
+
+
+class ExactMatch(BaseMetric):
+    """A local exact-match metric (the catalog one was removed)."""
+
+    name = "exact_match"
+    tier = Tier.DETERMINISTIC
+    requires = frozenset({"output", "expected"})
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        ok = ctx.output == ctx.expected
+        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
 
 
 def _failing_result():

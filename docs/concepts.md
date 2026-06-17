@@ -55,7 +55,7 @@ fields are populated differs. Optional fields cover all four agent types.
 @dataclass(frozen=True)
 class MetricResult:
     metric: str
-    score: float                    # normalized 0..1 (bool → 0/1, graded e.g. nDCG)
+    score: float                    # normalized 0..1 (bool → 0/1, graded e.g. soft_f1)
     passed: bool | None = None      # set for binary metrics; None for graded
     confidence: float | None = None # for UNCERTAINTY/JUDGE tiers (drives runtime escalation)
     cost: Cost = Cost()             # tokens / usd / latency_ms (auto-captures latency)
@@ -119,8 +119,9 @@ class EvalTarget:
 Every metric declares a `tier`, which is also the runtime critic's **cheap-to-strong escalation
 order**:
 
-1. **DETERMINISTIC** — grounded, reproducible, usually free: exact/regex/set match, SQL execution &
-   AST checks, retrieval Recall@k, tool-arg validity. *Preferred for objective correctness.*
+1. **DETERMINISTIC** — grounded, reproducible, usually free: SQL execution & AST checks (execution
+   accuracy, schema linking), retrieval Recall@k/Precision@k, tool-arg & trajectory validity.
+   *Preferred for objective correctness.*
 2. **UNCERTAINTY** — label-free confidence with no oracle: SelfCheckGPT consistency, semantic
    entropy. Cheap-ish.
 3. **JUDGE** — an LLM-as-judge for subjective quality where no oracle exists. Expensive; certified &

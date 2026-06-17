@@ -16,15 +16,9 @@ from agent_eval.agents.orchestration.suites import orchestration_registry
 
 `requires` = `EvalContext` fields the metric needs (`metadata[...]` keys noted in *italics*).
 
-### Deterministic — always available (`default_registry()`)
-
-| type | params | kind | reads | what |
-|---|---|---|---|---|
-| `exact_match` | — | binary | output, expected | `output == expected` |
-| `regex_match` | `pattern`, `flags` | binary | output | `re.search(pattern, output)` |
-| `set_match` | — | binary | output, expected | order-insensitive set equality |
-| `numeric_tolerance` | `tol` | binary | output, expected | `|float(output)-float(expected)| <= tol` |
-| `json_shape` | `required_keys` | binary | output | output (JSON/dict) has all keys |
+> **Note:** the previously always-available deterministic metrics (`exact_match`, `regex_match`,
+> `set_match`, `numeric_tolerance`, `json_shape`) were removed — `default_registry()` is now an empty
+> base. Add your own deterministic check via `BaseMetric` (see [customizing.md](customizing.md)).
 
 ### T2S — `t2s_registry()` (needs `--extra t2s`; execution metrics read *`db_ref`*)
 
@@ -43,9 +37,6 @@ from agent_eval.agents.orchestration.suites import orchestration_registry
 |---|---|---|---|
 | `recall_at_k` | `k` | graded (gate) | fraction of relevant retrieved in top-k |
 | `precision_at_k` | `k` | graded | fraction of top-k that are relevant |
-| `hit_at_k` | `k` | binary | any relevant in top-k |
-| `mrr` | — | graded | mean reciprocal rank |
-| `ndcg_at_k` | `k` | graded | graded-relevance ranking quality |
 | `retrieval_sufficiency` | `k`, `min_recall` | binary | CRAG gate: Recall@k ≥ floor (else re-retrieve) |
 
 ### Uncertainty — `rag_registry()` / `plain_registry()` (read *`samples`* = list of sampled answers)
@@ -74,13 +65,15 @@ quality; certified & pinned before it may gate.
 ## Plain
 
 Single-shot LLM response. No retrieval or trajectory to verify, so the **response** category carries
-the load (a certified judge for subjective quality; deterministic checks for format/compliance), and
-the runtime critic is a label-free **hallucination gate**.
+the load (a certified judge for subjective quality), and the runtime critic is a label-free
+**hallucination gate**.
 
-- Registry: `plain_registry()` (deterministic + uncertainty).
+- Registry: `plain_registry()` (uncertainty metrics; add a certified `JudgeMetric` — and a planned
+  BERTScore — for response quality).
 - Critic: `build_plain_critic(cfg, threshold=0.6)` → `SelfCheckConsistency` (UNCERTAINTY) → low
   consistency *escalates*.
-- Example: [`examples/toy/toy.yaml`](../examples/toy/toy.yaml) (exact-match QA gate).
+- No bundled example config ships for Plain; its offline gate is a certified judge (see
+  [judges.md](judges.md)).
 
 ## T2S (text-to-SQL / text-to-Cypher)
 
@@ -107,7 +100,7 @@ re-retrieval + a semantic-entropy groundedness flag.
 - Registry: `rag_registry()`. Critic: `build_rag_critic(cfg, k=10, min_recall=0.5)` →
   `RetrievalSufficiency` (re-retrieve) + `SemanticEntropy`.
 - Example: [`examples/rag/rag.yaml`](../examples/rag/rag.yaml).
-- For LLM faithfulness/answer-relevancy, configure a `RagasMetric` (lazy; needs `--extra ragas` +
+- For LLM faithfulness/context-precision, configure a `RagasMetric` (lazy; needs `--extra ragas` +
   an LLM) or a `JudgeMetric` in the response suite.
 
 ## Orchestration

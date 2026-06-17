@@ -3,7 +3,22 @@
 import json
 
 from agent_eval.config.loader import load_config
+from agent_eval.core.contracts import EvalContext, MetricResult, Tier
+from agent_eval.core.metric import BaseMetric
+from agent_eval.core.registry import default_registry
 from agent_eval.offline.calibrate import calibrate_and_write, calibrate_tau
+
+
+class _ExactMatch(BaseMetric):
+    """Local stand-in metric (the deterministic catalog was removed)."""
+
+    name = "exact_match"
+    tier = Tier.DETERMINISTIC
+    requires = frozenset({"output", "expected"})
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        ok = ctx.output == ctx.expected
+        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
 
 
 def test_calibrate_tau_bounds_false_fail_rate():
@@ -35,7 +50,9 @@ runtime_critic: {{tiers: [deterministic], tau: {{}}}}
     cfg_path = tmp_path / "c.yaml"
     cfg_path.write_text(cfg_text)
 
-    tau = calibrate_and_write(cfg_path, "search", max_false_fail=0.05)
+    reg = default_registry()
+    reg.register("exact_match", lambda p: _ExactMatch())  # config gates on exact_match
+    tau = calibrate_and_write(cfg_path, "search", max_false_fail=0.05, registry=reg)
     assert tau["exact_match"] == 1.0
     reloaded = load_config(cfg_path)
     assert reloaded.runtime_critic.tau["exact_match"] == 1.0  # written back into the same config

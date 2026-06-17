@@ -163,17 +163,17 @@ the `tau` block as generated — or call `calibrate` against a copy and review t
 
 ```yaml
 version: 1
-agent_type: plain
+agent_type: rag
 datasets:
   qa:
     adapter: jsonl
     path: ${DATA_DIR}/qa.jsonl
-    field_map: {input: question, output: answer, expected: gold}
+    field_map: {input: question, output: retrieved, expected: relevant}
 suites:
-  response:
+  search:
     dataset: qa
-    metrics: [{type: exact_match, name: exact_match}]
-    gate: {thresholds: {exact_match: 0.6}, require_pass: [exact_match]}
+    metrics: [{type: recall_at_k, name: recall_at_k, params: {k: 5}}]
+    gate: {thresholds: {recall_at_k: 0.7}, require_pass: [recall_at_k]}
 ```
 ```bash
 DATA_DIR=./data uv run agent-eval evaluate -c that_file.yaml

@@ -4,7 +4,6 @@ from agent_eval.core.contracts import EvalContext, MetricResult, Tier
 from agent_eval.core.gate import GatePolicy
 from agent_eval.core.metric import BaseMetric
 from agent_eval.core.suite import Suite
-from agent_eval.metrics.deterministic_ import ExactMatch
 from agent_eval.offline.runner import evaluate
 
 
@@ -14,6 +13,18 @@ class Graded(BaseMetric):
 
     def _compute(self, ctx: EvalContext) -> MetricResult:
         return MetricResult(self.name, float(ctx.metadata["s"]), passed=None)
+
+
+class ExactMatch(BaseMetric):
+    """A local exact-match metric (the catalog one was removed); requires output + expected."""
+
+    name = "exact_match"
+    tier = Tier.DETERMINISTIC
+    requires = frozenset({"output", "expected"})
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        ok = ctx.output == ctx.expected
+        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
 
 
 def _exact_ds(pairs):

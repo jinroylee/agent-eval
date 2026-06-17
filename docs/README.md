@@ -40,21 +40,20 @@ real LLM/backend.
 ## 60-second quickstart
 
 ```bash
-# Score a tiny "Plain" agent (exact-match QA) and gate on a threshold:
-uv run agent-eval evaluate --config examples/toy/toy.yaml
+# Score a tiny RAG retriever (Recall@k) and gate on a threshold:
+uv run agent-eval evaluate --config examples/rag/rag.yaml
 ```
 ```
-=== plain/response  dataset=qa  n=6 ===
+=== rag/search  dataset=qa  n=5 ===
 metric                     value              95% CI    thr  gate
-exact_match                0.667      [0.300, 0.903]   0.60  PASS
-nonempty                   1.000      [0.610, 1.000]      -  info
+recall_at_k                0.900      [0.704, 1.000]   0.70  PASS
+precision_at_k             0.633      [0.417, 0.850]      -  info
 VERDICT: PASS
 ```
 
 Run the other built-in examples the same way:
 
 ```bash
-uv run agent-eval evaluate -c examples/rag/rag.yaml            # RAG retrieval gate (Recall@k)
 uv run agent-eval evaluate -c examples/t2s/t2s.yaml            # text-to-SQL (Execution Accuracy)
 uv run agent-eval evaluate -c examples/orchestration/orchestration.yaml   # tool-trajectory gate
 ```
@@ -70,6 +69,7 @@ uv run agent-eval calibrate -c examples/t2s/t2s.yaml --category search
 | Doc | What it covers |
 |---|---|
 | [concepts.md](concepts.md) | The mental model: the metric core, two modes, three tiers, multi-level, the calibration link, and the core data types. **Read this first.** |
+| [repository-structure.md](repository-structure.md) | The physical layout — every package/module in `src/agent_eval/`, plus `tests/`/`examples/`/`docs/`, and a "where does X live?" map. |
 | [configuration.md](configuration.md) | The complete YAML reference — every section and field. |
 | [offline-evaluation.md](offline-evaluation.md) | Datasets, running the gate, reading verdicts, the statistics, regression vs a baseline, calibration, and CI integration. |
 | [runtime-critic.md](runtime-critic.md) | The in-flight critic: policy, tiers, the retry→fallback loop, loop guards, and the built-in per-agent-type critics. |

@@ -14,8 +14,7 @@ suites:
     target: {level: node, selector: retrieve, attach: observe}
     metrics:
       - {type: recall_at_k, name: recall_at_k, params: {k: 5}}
-      - {type: mrr, name: mrr}
-      - {type: ndcg_at_k, name: ndcg_at_k, params: {k: 5}}
+      - {type: precision_at_k, name: precision_at_k, params: {k: 5}}   # informational
     gate:
       thresholds: {recall_at_k: 0.7}        # Recall@k is the hard search gate
       require_pass: [recall_at_k]

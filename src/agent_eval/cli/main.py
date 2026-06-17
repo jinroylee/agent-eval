@@ -24,8 +24,8 @@ app = typer.Typer(
 
 
 def _build_registry():
-    """Registry with built-in deterministic metrics + all pure families (retrieval, uncertainty,
-    trajectory, perf) + T2S (if sqlglot installed) + any plugin metrics (entry points)."""
+    """Registry with all pure metric families (retrieval, uncertainty, trajectory, perf) + T2S
+    (if sqlglot installed) + any plugin metrics (entry points)."""
     from agent_eval.metrics.perf_ import register_perf_metrics
     from agent_eval.metrics.retrieval_ import register_retrieval_metrics
     from agent_eval.metrics.trajectory_ import register_trajectory_metrics

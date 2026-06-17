@@ -1,6 +1,6 @@
 """Metric registry — builds Metric instances from config (the config-first surface).
 
-A metric spec is either a bare type string (``"exact_match"``) or a dict
+A metric spec is either a bare type string (``"recall_at_k"``) or a dict
 ``{"type": ..., "name": ..., "params": {...}}``. Future agents and plugins register new types
 here; nothing in the core changes. Plugin types are discovered via entry points (group
 ``agent_eval.metrics``) when ``load_plugins()`` is called.
@@ -13,13 +13,6 @@ from importlib.metadata import entry_points
 
 from agent_eval.core.errors import ConfigError
 from agent_eval.core.metric import Metric
-from agent_eval.metrics.deterministic_ import (
-    ExactMatch,
-    JsonShape,
-    NumericTolerance,
-    RegexMatch,
-    SetMatch,
-)
 
 MetricFactory = Callable[[dict], Metric]
 
@@ -56,14 +49,13 @@ class MetricRegistry:
 
 
 def default_registry() -> MetricRegistry:
-    """A registry pre-loaded with the built-in deterministic metrics."""
-    reg = MetricRegistry()
-    reg.register("exact_match", lambda p: ExactMatch())
-    reg.register("regex_match", lambda p: RegexMatch(**p))
-    reg.register("set_match", lambda p: SetMatch())
-    reg.register("numeric_tolerance", lambda p: NumericTolerance(**p))
-    reg.register("json_shape", lambda p: JsonShape(**p))
-    return reg
+    """A fresh, empty base registry.
+
+    Built-in metrics are registered per agent type via the ``register_*`` helpers in ``metrics/``
+    (see ``agents/<type>/suites.py``), and third-party metrics via ``load_plugins()``. The CLI
+    layers all the pure families on top of this base (see ``cli.main._build_registry``).
+    """
+    return MetricRegistry()
 
 
 __all__ = ["MetricRegistry", "MetricFactory", "default_registry"]

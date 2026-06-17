@@ -1,12 +1,7 @@
-"""Tests for the pure RAG retrieval metrics (no LLM): Recall@k, Precision@k, Hit@k, MRR, nDCG."""
-
-import math
+"""Tests for the pure RAG retrieval metrics (no LLM): Recall@k, Precision@k, RetrievalSufficiency."""
 
 from agent_eval.core.contracts import EvalContext
 from agent_eval.metrics.retrieval_ import (
-    MRR,
-    HitAtK,
-    NdcgAtK,
     PrecisionAtK,
     RecallAtK,
     RetrievalSufficiency,
@@ -24,24 +19,6 @@ def test_recall_at_k():
 
 def test_precision_at_k():
     assert abs(PrecisionAtK(k=3).score(_ctx(["a", "b", "c", "d"], ["a", "c"])).score - 2 / 3) < 1e-9
-
-
-def test_hit_at_k_is_binary():
-    hit = HitAtK(k=2).score(_ctx(["x", "a"], ["a"]))
-    assert hit.score == 1.0 and hit.passed is True
-    miss = HitAtK(k=1).score(_ctx(["x", "a"], ["a"]))
-    assert miss.score == 0.0 and miss.passed is False
-
-
-def test_mrr():
-    assert abs(MRR().score(_ctx(["x", "a", "b"], ["a"])).score - 0.5) < 1e-9  # first relevant at pos 2
-    assert MRR().score(_ctx(["x", "y"], ["a"])).score == 0.0
-
-
-def test_ndcg_at_k():
-    assert abs(NdcgAtK(k=3).score(_ctx(["a", "b", "c"], ["a"])).score - 1.0) < 1e-9  # ideal
-    v = NdcgAtK(k=3).score(_ctx(["x", "a", "y"], ["a"])).score  # relevant at rank 2
-    assert abs(v - (1 / math.log2(3))) < 1e-6
 
 
 def test_retrieval_sufficiency_gate():

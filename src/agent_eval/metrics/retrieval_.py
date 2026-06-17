@@ -8,8 +8,6 @@ that triggers re-retrieval.
 
 from __future__ import annotations
 
-import math
-
 from agent_eval.core.contracts import CostClass, EvalContext, MetricResult, Tier
 from agent_eval.core.metric import BaseMetric
 
@@ -54,39 +52,6 @@ class PrecisionAtK(_RetrievalMetric):
         return MetricResult(self.name, len(set(top) & rel) / denom, passed=None)
 
 
-class HitAtK(_RetrievalMetric):
-    name = "hit_at_k"
-
-    def _compute(self, ctx: EvalContext) -> MetricResult:
-        rel = _relevant(ctx)
-        hit = any(d in rel for d in _retrieved(ctx)[: self.k])
-        return MetricResult(self.name, 1.0 if hit else 0.0, passed=hit)
-
-
-class MRR(_RetrievalMetric):
-    name = "mrr"
-
-    def _compute(self, ctx: EvalContext) -> MetricResult:
-        rel = _relevant(ctx)
-        rr = 0.0
-        for i, d in enumerate(_retrieved(ctx)):
-            if d in rel:
-                rr = 1.0 / (i + 1)
-                break
-        return MetricResult(self.name, rr, passed=None)
-
-
-class NdcgAtK(_RetrievalMetric):
-    name = "ndcg_at_k"
-
-    def _compute(self, ctx: EvalContext) -> MetricResult:
-        rel = _relevant(ctx)
-        top = _retrieved(ctx)[: self.k]
-        dcg = sum(1.0 / math.log2(i + 2) for i, d in enumerate(top) if d in rel)
-        idcg = sum(1.0 / math.log2(i + 2) for i in range(min(len(rel), self.k)))
-        return MetricResult(self.name, dcg / idcg if idcg > 0 else 0.0, passed=None)
-
-
 class RetrievalSufficiency(_RetrievalMetric):
     """CRAG-style gate: is the retrieved context good enough, or should we re-retrieve?"""
 
@@ -107,7 +72,4 @@ class RetrievalSufficiency(_RetrievalMetric):
 def register_retrieval_metrics(registry) -> None:
     registry.register("recall_at_k", lambda p: RecallAtK(**p))
     registry.register("precision_at_k", lambda p: PrecisionAtK(**p))
-    registry.register("hit_at_k", lambda p: HitAtK(**p))
-    registry.register("mrr", lambda p: MRR(**p))
-    registry.register("ndcg_at_k", lambda p: NdcgAtK(**p))
     registry.register("retrieval_sufficiency", lambda p: RetrievalSufficiency(**p))

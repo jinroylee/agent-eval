@@ -29,9 +29,7 @@ class RagasMetric(BaseMetric):
             raise ImportError("RagasMetric requires the '[ragas]' extra") from exc
         registry = {
             "faithfulness": "Faithfulness",
-            "answer_relevancy": "ResponseRelevancy",
             "context_precision": "LLMContextPrecisionWithReference",
-            "context_recall": "LLMContextRecall",
         }
         cls_name = registry.get(self.metric_name, self.metric_name)
         return getattr(ragas_metrics, cls_name)()

@@ -28,18 +28,18 @@ straight into CI as the deploy gate.
 from agent_eval.core.contracts import EvalContext
 from agent_eval.core.gate import GatePolicy
 from agent_eval.core.suite import Suite
-from agent_eval.metrics.deterministic_ import ExactMatch
+from agent_eval.metrics.retrieval_ import RecallAtK
 from agent_eval.offline.runner import evaluate
 
 dataset = [
-    EvalContext(input="2+2?", output="4", expected="4"),
-    EvalContext(input="capital of France?", output="Paris", expected="Paris"),
-    EvalContext(input="sky color?", output="Blue", expected="blue"),   # mismatch (case)
+    EvalContext(input="q1", output=["d1", "d2"], expected=["d1"]),          # recall 1.0
+    EvalContext(input="q2", output=["d3", "x"], expected=["d3", "d9"]),     # recall 0.5
+    EvalContext(input="q3", output=["x", "y"], expected=["d7"]),            # recall 0.0
 ]
 suite = Suite(
-    agent_type="plain", category="response",
-    metrics=[ExactMatch()],
-    gate=GatePolicy(thresholds={"exact_match": 0.6}, require_pass=["exact_match"]),
+    agent_type="rag", category="search",
+    metrics=[RecallAtK(k=10)],
+    gate=GatePolicy(thresholds={"recall_at_k": 0.4}, require_pass=["recall_at_k"]),
 )
 result = evaluate(suite, dataset)
 
@@ -59,20 +59,20 @@ GateVerdict(passed: bool, metric_passed: dict[str,bool], reasons: list[str])
 Building the dataset from a config (so you reuse your `field_map`) is one call:
 
 ```python
+from agent_eval.agents.rag.suites import rag_registry
 from agent_eval.config.loader import load_config, build_suite, build_dataset_spec
-from agent_eval.core.registry import default_registry
 from agent_eval.datasets.base import load_dataset
 
 cfg = load_config("my.yaml")
-suite = build_suite(cfg, "response", default_registry())
-data = load_dataset(build_dataset_spec(cfg, cfg.suites["response"].dataset))
+suite = build_suite(cfg, "search", rag_registry())
+data = load_dataset(build_dataset_spec(cfg, cfg.suites["search"].dataset))
 result = evaluate(suite, data)
 ```
 
 ## How aggregation works (and why)
 
-- **Binary metrics** (those returning `passed=True/False`, e.g. `exact_match`, `execution_accuracy`,
-  `hit_at_k`, `trajectory_match`) are summarized as a **pass rate** with a **Wilson** confidence
+- **Binary metrics** (those returning `passed=True/False`, e.g. `execution_accuracy`,
+  `trajectory_match`, `ast_valid`) are summarized as a **pass rate** with a **Wilson** confidence
   interval — which, unlike the normal-approximation CLT, does not under-cover at small *n*.
 - **Graded metrics** (those returning a float `score` with `passed=None`, e.g. `recall_at_k`,
   `soft_f1`, `semantic_entropy`, a judge score) are summarized as a **mean** with a

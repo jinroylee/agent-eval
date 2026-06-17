@@ -6,9 +6,22 @@ from agent_eval.config.loader import (
     load_config,
     write_calibrated_tau,
 )
-from agent_eval.core.contracts import EvalContext, Level
+from agent_eval.core.contracts import EvalContext, Level, MetricResult, Tier
+from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import default_registry
 from agent_eval.offline.runner import evaluate
+
+
+class _ExactMatch(BaseMetric):
+    """Local stand-in metric (the deterministic catalog was removed) for the loader tests."""
+
+    name = "exact_match"
+    tier = Tier.DETERMINISTIC
+    requires = frozenset({"output", "expected"})
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        ok = ctx.output == ctx.expected
+        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
 
 CONFIG = """
 version: 1
@@ -55,7 +68,9 @@ def test_env_interpolation_in_paths(tmp_path, monkeypatch):
 
 def test_build_suite_constructs_runnable_suite(tmp_path):
     cfg = load_config(_write(tmp_path))
-    suite = build_suite(cfg, "response", default_registry())
+    reg = default_registry()
+    reg.register("exact_match", lambda p: _ExactMatch())  # CONFIG gates on exact_match
+    suite = build_suite(cfg, "response", reg)
     assert suite.metrics[0].name == "exact"
     assert suite.gate.thresholds["exact"] == 0.5
     assert suite.target.level is Level.GRAPH
