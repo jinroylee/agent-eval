@@ -1,0 +1,5 @@
+{"question": "What is the capital of France?", "relevant": ["d1", "d2"], "reference": "Paris is the capital of France."}
+{"question": "Who wrote Hamlet?", "relevant": ["d3", "d4"], "reference": "William Shakespeare wrote Hamlet."}
+{"question": "At what temperature does water boil?", "relevant": ["d5"], "reference": "Water boils at 100 degrees Celsius at standard atmospheric pressure."}
+{"question": "When did Apollo 11 land on the Moon?", "relevant": ["d7"], "reference": "Apollo 11 landed on the Moon on July 20, 1969."}
+{"question": "Who was the first person to walk on the Moon?", "relevant": ["d8", "d7"], "reference": "Neil Armstrong was the first person to walk on the Moon."}

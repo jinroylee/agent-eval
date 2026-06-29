@@ -31,7 +31,8 @@ def to_dict(result: SuiteResult) -> dict:
                 "ci_high": a.ci_high,
                 "n": a.n,
                 "n_errors": a.n_errors,
-                "binary": a.binary,
+                "aggregation": a.aggregation.value,
+                "higher_is_better": a.higher_is_better,
             }
             for a in result.aggregates
         ],

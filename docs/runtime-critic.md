@@ -1,131 +1,70 @@
-# The runtime critic (in-flight critique)
+# Runtime critique (foundation)
 
-The runtime mode answers, *mid-execution*: did this step meet its requirement, and if not, what do
-we do — **accept, retry, fall back, escalate, or abstain**?
+> **Status: a foundation for a future mode, not part of the offline gate.** The offline
+> `predict`/`evaluate` path does not import any of this. It's kept here, wired against the current
+> metric contract and covered by tests, so the runtime-critique mode can be built on top of it later.
 
-Two design rules from the research are baked in:
+The offline runner scores a whole *dataset* and gates a release. The **critic** is the in-flight
+counterpart: it scores a *single step* with the **same `Metric` objects** and turns the scores into a
+decision, so a LangGraph node can self-correct before emitting a bad result. One metric core, two
+entrypoints.
 
-1. **Generator ≠ verifier.** The critic never lets the model that produced an output grade its own
-   correctness on an objective task. Verification is a *separate*, grounded check.
-2. **Cheap to strong.** Run a deterministic check first; only escalate to an uncertainty signal or
-   (last) an LLM judge when there's no oracle and the cheap checks passed.
+## Design principles (preserved for the build-out)
 
-## The policy
+- **Cheap-first escalation.** Metrics run in `cost_class` order (FREE → CHEAP → EXPENSIVE) and the
+  critic short-circuits the moment a grounded check fails — so you never pay for the LLM judge when a
+  free parse/execution check already caught the problem.
+- **Generator/verifier separation.** The critic consumes only *external* verifiers (`ast_valid`,
+  retrieval, an independent judge); it never asks the model that produced an answer to grade its own
+  correctness.
+- **Hard vs soft failure.** A failed binary/grounded check (`aggregation == RATE`, e.g. `ast_valid`)
+  is an objective error → **retry**. A low-confidence graded check (`consistency`, `faithfulness`) →
+  **escalate** for review. Everything passing → **accept**.
 
-```python
-from agent_eval.runtime.policy import CriticPolicy
-from agent_eval.core.contracts import Tier
+## The pieces (`agent_eval.runtime`)
 
-policy = CriticPolicy(
-    tiers=[Tier.DETERMINISTIC, Tier.UNCERTAINTY, Tier.JUDGE],  # escalation order
-    tau={"execution_accuracy": 1.0, "selfcheck_consistency": 0.6},  # per-metric thresholds (calibrated offline)
-    max_retries=2,
-    fallback="abstain",                # FallbackStrategy id
-    latency_budget_ms=1500,
-    self_refine_only_for=["style", "format", "safety"],  # never to fix correctness
-)
-```
-
-`tiers` accepts the `Tier` enum or strings (`"deterministic"`, …) — exactly what
-`runtime_critic.tiers` in YAML gives you.
-
-## The critic
-
-A `Critic` holds metrics grouped by tier and a policy:
-
-```python
-from agent_eval.runtime.critic import Critic
-from agent_eval.core.contracts import EvalContext, Decision
-
-critic = Critic({Tier.DETERMINISTIC: [my_check]}, policy)
-
-decision, assessment = critic.decide(EvalContext(input=..., output=...), attempt=0)
-# decision: Decision.ACCEPT | RETRY | FALLBACK | ESCALATE | ABSTAIN
-# assessment.accepted / .hard_fail / .confidence / .failing / .critique
-```
-
-`Critic.assess(ctx)` runs the tiers cheapest-first and stops at the first failing deterministic tier
-(don't pay for expensive tiers once a grounded check fails). `Critic.decide(ctx, attempt)` maps the
-assessment + attempt count to a `Decision`:
-
-| Situation | Decision |
+| | |
 |---|---|
-| All tiers pass | `ACCEPT` |
-| Deterministic check failed, retries remain | `RETRY` |
-| Deterministic check failed, retries exhausted | `FALLBACK` |
-| Passed grounded checks but confidence below `tau` (no oracle) | `ESCALATE` |
+| `Critic(metrics, policy)` | `assess(ctx) -> Assessment`; `decide(ctx, attempt) -> (Decision, Assessment)` |
+| `CriticPolicy(tau, max_retries)` | per-metric acceptance thresholds + retry budget |
+| `Decision` | `ACCEPT · RETRY · FALLBACK · ESCALATE · ABSTAIN` |
+| `critic_loop(generate, build_ctx, critic, fallback)` | bounded generate → verify → retry-with-critique loop |
+| `LoopGuard` | stops oscillation / no-progress retries |
+| `default_fallbacks()` | named strategies (`abstain`, `escalate`) |
 
-`assessment.critique` is a grounded, falsifiable message built from the failing metrics' details
-(e.g. *"exec_validity: no such table: emp; schema_linking: unknown tables ['emp']"*) — inject it
-into your generator on retry.
+## Sketch
 
-## The retry→fallback loop
-
-`critic_loop` orchestrates the whole "generate → verify → retry-with-critique → fall back" cycle —
-this is what a LangGraph node ultimately calls:
+The critic is built from exactly the metrics you already use — e.g. a T2S step gated on `ast_valid`
+(grounded, hard) with a `t2s_consistency` confidence check (graded, soft):
 
 ```python
-from agent_eval.runtime.critic import critic_loop
+from agent_eval.core.contracts import EvalContext, MetaKey
+from agent_eval.metrics.t2s import AstValid, T2SConsistency
+from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
+from agent_eval.runtime.critic import Critic, CriticPolicy, critic_loop
 from agent_eval.runtime.fallback import default_fallbacks
 
-def generate(attempt: int, critique: str | None):
-    # produce an output; on retry, use `critique` to fix the previous attempt
-    return my_agent(prompt, repair_hint=critique)
-
-result = critic_loop(
-    generate,
-    build_ctx=lambda output: EvalContext(input=question, output=output, metadata={...}),
-    critic=critic,
-    fallback=default_fallbacks().get("abstain"),
+critic = Critic(
+    metrics=[AstValid(), T2SConsistency(FunctionJudge(lexical_overlap_judge))],
+    policy=CriticPolicy(tau={"t2s_consistency": 0.6}, max_retries=2),
 )
-# result.decision: ACCEPT (a good output was produced) | ABSTAIN/ESCALATE (gave up safely)
-# result.output, result.attempts, result.history (per-attempt assessments)
+
+def generate(attempt, critique):
+    # call your model; inject `critique` (the grounded feedback) on retries
+    ...
+
+def build_ctx(sql_and_answer):
+    return EvalContext(input=question, output=sql_and_answer.answer,
+                       metadata={MetaKey.SQL: sql_and_answer.sql, MetaKey.DB_REF: db})
+
+result = critic_loop(generate, build_ctx, critic, fallback=default_fallbacks().get("abstain"))
+result.decision   # ACCEPT / ESCALATE / ABSTAIN / ...
 ```
 
-**Loop guards** prevent degenerate behavior: retries are capped at `max_retries`, and if the
-generator produces an output it already tried (no progress / oscillation), the loop stops and falls
-back instead of spinning.
+## What's intentionally left for later
 
-## Fallback strategies
-
-A fallback maps `(ctx, assessment) -> (Decision, value)`. Two are built in; register your own:
-
-```python
-from agent_eval.runtime.fallback import FallbackRegistry, default_fallbacks
-from agent_eval.core.contracts import Decision
-
-reg = default_fallbacks()                 # "abstain" -> (ABSTAIN, None); "escalate" -> (ESCALATE, None)
-reg.register("cached", lambda ctx, a: (Decision.FALLBACK, lookup_cache(ctx.input)))
-fallback = reg.get("cached")
-```
-
-## Where do the thresholds (`tau`) come from?
-
-From the **offline** run: `agent-eval calibrate` writes `runtime_critic.tau` so the in-flight
-critic accepts/retries using thresholds the offline study justified. A single live decision (n=1)
-can't do significance testing — so calibrate offline, reuse at runtime, and aggregate live outcomes
-for drift monitoring (see [statistics.md](statistics.md) → drift).
-
-## Built-in per-agent-type critics
-
-You usually don't assemble a `Critic` by hand — each agent type ships a builder that wires the right
-tiers from your config's `runtime_critic` block:
-
-```python
-from agent_eval.agents.t2s.critic import build_t2s_critic            # AST-valid + schema-linking + dry-run exec
-from agent_eval.agents.rag.critic import build_rag_critic            # retrieval sufficiency (re-retrieve) + groundedness
-from agent_eval.agents.plain.critic import build_plain_critic        # self-consistency hallucination flag
-from agent_eval.agents.orchestration.critic import build_orchestration_critic  # per-step tool-arg validity
-
-critic = build_t2s_critic(cfg)            # cfg from load_config(...)
-```
-
-| Agent type | Tier-1 (deterministic) | Tier-2 (uncertainty) |
-|---|---|---|
-| **T2S** | AST validity → schema linking → dry-run execution | — |
-| **RAG** | retrieval sufficiency (Recall@k ≥ floor → re-retrieve) | semantic-entropy groundedness |
-| **Plain** | — | self-consistency over sampled answers |
-| **Orchestration** | per-step tool-arg validity (BFCL-style) | — |
-
-See [langgraph-integration.md](langgraph-integration.md) for wiring any of these onto real graph
-edges, and [agent-types.md](agent-types.md) for the metric details.
+- No `agent-eval` CLI command and no config section (the offline flow stays the simple surface).
+- The `tau` thresholds are hand-set; the planned design calibrates them from an offline study so the
+  in-flight critic and the CI gate share operating points.
+- No LangGraph node wrapper yet — `critic_loop` is framework-agnostic; wiring it into a node
+  (inject the critique on retry, route on the `Decision`) is the next step.

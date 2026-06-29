@@ -1,0 +1,37 @@
+version: 1
+agent_type: plain
+
+# Optional: wire a real LLM judge. With no `judge:` section the judge metrics fall back to a
+# deterministic token-overlap stub so this example runs with no API key.
+# judge:
+#   factory: examples/judges.py:claude_judge   # see examples/judges.py
+
+datasets:
+  gold:                                   # inputs + reference answers (ground truth)
+    adapter: jsonl
+    path: examples/plain/gold.jsonl
+    field_map: {input: question, expected: reference}
+  predictions:                            # written by `agent-eval predict`, read by `evaluate`
+    adapter: jsonl
+    path: examples/plain/predictions.jsonl
+
+prediction:                               # how to run the agent to fill predictions
+  graph: examples/plain/agent.py:graph
+  source: gold
+  target: predictions
+  input_key: input                        # graph state key the question is passed under
+  state_map:                              # canonical eval field <- agent's final state key
+    output: answer                        #   the response judge + bertscore score
+    tokens: tokens                        #   tokens spent (token_usage)
+
+suites:
+  response:
+    dataset: predictions
+    metrics:
+      - llm_judge                         # subjective quality (Completeness/Clarity/Usefulness/...)
+      - p95_latency                       # tail latency (ms), lower is better
+      - token_usage                       # mean tokens/query, lower is better
+      # - bertscore                       # similarity to reference; needs: uv sync --extra bertscore
+    gate:
+      thresholds: {llm_judge: 0.5, p95_latency: 2000.0}
+      require_pass: [llm_judge]

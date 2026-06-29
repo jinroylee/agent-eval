@@ -1,86 +1,72 @@
-"""Known-good / known-bad tests for the T2S (text-to-SQL) metrics."""
+"""T2S metrics: execution-grounded soft_f1, AST component_match/ast_valid, judge groundedness."""
 
 import sqlite3
 
-from agent_eval.core.contracts import EvalContext
-from agent_eval.metrics.ast_query_ import (
-    AstValid,
-    ComponentMatch,
-    ExecutionAccuracy,
-    ExecValidity,
-    SchemaLinking,
-    SoftF1,
-)
+import pytest
+
+from agent_eval.core.contracts import EvalContext, MetaKey
+from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
+from agent_eval.metrics.t2s import AstValid, ComponentMatch, SoftF1, T2SFaithfulness
 
 
-def _db(tmp_path):
-    p = tmp_path / "e.sqlite"
-    if not p.exists():  # build once, reuse across the several _ctx() calls in a test
-        con = sqlite3.connect(p)
-        con.executescript(
-            """
-            CREATE TABLE emp(id INTEGER, dept TEXT, salary REAL);
-            INSERT INTO emp VALUES (1, 'A', 100.0), (2, 'A', 200.0), (3, 'B', NULL);
-            """
-        )
-        con.commit()
-        con.close()
-    return str(p)
-
-
-def _ctx(tmp_path, output, expected=None):
-    return EvalContext(
-        input="q", output=output, expected=expected, metadata={"db_ref": _db(tmp_path)}
+@pytest.fixture
+def db(tmp_path):
+    path = str(tmp_path / "t.sqlite")
+    con = sqlite3.connect(path)
+    con.executescript(
+        "CREATE TABLE emp (id INTEGER, name TEXT, salary REAL);"
+        "INSERT INTO emp VALUES (1,'Alice',150000),(2,'Bob',90000),(3,'Carol',120000);"
     )
+    con.commit()
+    con.close()
+    return path
 
 
-def test_execution_accuracy_match(tmp_path):
-    ctx = _ctx(
-        tmp_path,
-        "SELECT id FROM emp WHERE dept = 'A' ORDER BY id",
-        "SELECT id FROM emp WHERE dept = 'A'",
-    )
-    assert ExecutionAccuracy().score(ctx).score == 1.0
+def _ctx(sql, gold_sql, db, output="", **extra):
+    md = {MetaKey.SQL: sql, MetaKey.GOLD_SQL: gold_sql, MetaKey.DB_REF: db, **extra}
+    return EvalContext(input="q", output=output, metadata=md)
 
 
-def test_execution_accuracy_mismatch(tmp_path):
-    ctx = _ctx(tmp_path, "SELECT id FROM emp", "SELECT id FROM emp WHERE dept = 'A'")
-    assert ExecutionAccuracy().score(ctx).score == 0.0
+def test_soft_f1_perfect_and_partial(db):
+    same = "SELECT name FROM emp WHERE salary > 100000"
+    assert SoftF1().score(_ctx(same, same, db)).score == 1.0
+    # dropped filter -> superset of rows -> partial credit, not 0
+    partial = SoftF1().score(_ctx("SELECT name FROM emp", same, db)).score
+    assert 0.0 < partial < 1.0
 
 
-def test_execution_accuracy_invalid_pred_scores_zero(tmp_path):
-    ctx = _ctx(tmp_path, "SELECT FROM oops", "SELECT id FROM emp")
-    r = ExecutionAccuracy().score(ctx)
-    assert r.score == 0.0 and r.passed is False
-    assert "pred_error" in r.detail
+def test_soft_f1_paraphrase_same_results(db):
+    gold = "SELECT AVG(salary) FROM emp"
+    pred = "SELECT AVG(salary) AS avg_salary FROM emp"
+    assert SoftF1().score(_ctx(pred, gold, db)).score == 1.0
 
 
-def test_soft_f1_partial(tmp_path):
-    ctx = _ctx(tmp_path, "SELECT id FROM emp WHERE dept = 'A'", "SELECT id FROM emp")
-    f = SoftF1().score(ctx).score
-    assert 0.0 < f < 1.0
+def test_component_match_dips_on_alias(db):
+    gold = "SELECT AVG(salary) FROM emp"
+    pred = "SELECT AVG(salary) AS avg_salary FROM emp"
+    r = ComponentMatch().score(_ctx(pred, gold, db))
+    assert 0.0 < r.score < 1.0  # same table, different projection text
 
 
-def test_component_match(tmp_path):
-    same = EvalContext(input="q", output="SELECT id FROM emp", expected="SELECT id FROM emp")
-    assert ComponentMatch().score(same).score == 1.0
-    diff = EvalContext(input="q", output="SELECT salary FROM emp", expected="SELECT id FROM emp")
-    assert ComponentMatch().score(diff).score < 1.0
+def test_ast_valid(db):
+    assert AstValid().score(_ctx("SELECT 1", "SELECT 1", db)).passed is True
+    assert AstValid().score(_ctx("SELECT FROM WHERE", "SELECT 1", db)).passed is False
 
 
-def test_ast_valid(tmp_path):
-    assert AstValid().score(EvalContext(input="q", output="SELECT 1")).score == 1.0
-    bad = AstValid().score(EvalContext(input="q", output="SELECT FROM WHERE"))
-    assert bad.score == 0.0 and bad.passed is False
+def test_t2s_metrics_require_sql_and_db():
+    assert SoftF1().score(EvalContext(input="q")).error  # no sql
+    assert AstValid().score(EvalContext(input="q")).error
 
 
-def test_schema_linking(tmp_path):
-    ok = _ctx(tmp_path, "SELECT dept, COUNT(*) AS n FROM emp GROUP BY dept ORDER BY n")
-    assert SchemaLinking().score(ok).score == 1.0
-    assert SchemaLinking().score(_ctx(tmp_path, "SELECT missing_col FROM emp")).score == 0.0
-    assert SchemaLinking().score(_ctx(tmp_path, "SELECT id FROM nope")).score == 0.0
+def test_t2s_faithfulness_judges_answer_against_execution(db):
+    judge = FunctionJudge(lexical_overlap_judge)
+    sql = "SELECT name FROM emp WHERE salary > 100000"
+    ctx = _ctx(sql, sql, db, output="Alice and Carol earn over 100000")
+    r = T2SFaithfulness(judge).score(ctx)
+    assert r.error is None and r.score > 0.0
 
 
-def test_exec_validity(tmp_path):
-    assert ExecValidity().score(_ctx(tmp_path, "SELECT id FROM emp")).score == 1.0
-    assert ExecValidity().score(_ctx(tmp_path, "SELECT id FROM nope")).score == 0.0
+def test_t2s_faithfulness_errors_on_bad_sql(db):
+    judge = FunctionJudge(lexical_overlap_judge)
+    ctx = _ctx("SELECT FROM nope", "SELECT 1", db, output="something")
+    assert T2SFaithfulness(judge).score(ctx).error  # query can't execute -> no result to judge

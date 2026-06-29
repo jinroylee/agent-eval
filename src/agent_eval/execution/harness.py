@@ -1,8 +1,8 @@
 """Dialect-aware execution harness: run predicted vs gold queries and compare result sets.
 
-The harness IS the sound external verifier for T2S — execution grounds correctness, so the
-runtime critic and offline gate both lean on it rather than on an LLM judging query correctness.
-P1 implements the SQLite backend; Postgres/Cypher backends slot in behind the same interface.
+The harness is the sound external verifier for T2S — execution grounds correctness, so the offline
+gate leans on it (soft_f1) rather than on an LLM judging query correctness. The SQLite backend ships
+here; Postgres/Cypher backends slot in behind the same interface.
 """
 
 from __future__ import annotations

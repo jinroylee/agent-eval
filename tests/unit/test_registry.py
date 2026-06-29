@@ -1,63 +1,47 @@
-"""Tests for the MetricRegistry that builds metrics from config dicts."""
+"""Metric registry: factory registration, BuildContext passthrough, and the built-in catalog."""
 
 import pytest
 
-from agent_eval.core.contracts import CostClass, EvalContext, MetricResult, Tier
+from agent_eval.core.contracts import EvalContext, MetricResult
 from agent_eval.core.errors import ConfigError
 from agent_eval.core.metric import BaseMetric
-from agent_eval.core.registry import MetricRegistry, default_registry
+from agent_eval.core.registry import BuildContext, MetricRegistry, default_registry
+
+EXPECTED_TYPES = {
+    "llm_judge", "bertscore", "p95_latency", "token_usage",  # common
+    "recall_at_k", "precision_at_k", "ndcg_at_k", "faithfulness", "consistency",  # rag
+    "soft_f1", "component_match", "ast_valid", "t2s_faithfulness", "t2s_consistency",  # t2s
+}
 
 
 class _Echo(BaseMetric):
-    """A trivial metric for exercising the registry mechanism (output == expected)."""
-
     name = "echo"
-    tier = Tier.DETERMINISTIC
-    requires = frozenset({"output", "expected"})
-    cost_class = CostClass.FREE
 
-    def __init__(self, bonus: float = 0.0) -> None:
-        self.bonus = bonus
+    def __init__(self, value: float = 0.0):
+        self.value = value
 
-    def _compute(self, ctx: EvalContext) -> MetricResult:
-        ok = ctx.output == ctx.expected
-        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
+    def _compute(self, ctx):
+        return MetricResult(self.name, self.value)
 
 
-def _reg() -> MetricRegistry:
+def test_register_and_build_with_params():
     reg = MetricRegistry()
-    reg.register("echo", lambda p: _Echo(**p))
-    return reg
+    reg.register("echo", lambda p, ctx: _Echo(**p))
+    m = reg.build({"type": "echo", "name": "my_echo", "params": {"value": 0.7}})
+    assert m.name == "my_echo" and m.score(EvalContext(input="q")).score == 0.7
 
 
-def test_build_by_type_and_overrides_name():
-    m = _reg().build({"type": "echo", "name": "em"})
-    assert m.name == "em"
-    assert m.score(EvalContext(input="q", output="a", expected="a")).score == 1.0
+def test_build_passes_build_context():
+    reg = MetricRegistry()
+    reg.register("ctx_echo", lambda p, ctx: _Echo(ctx.defaults.get("value", 0.0)))
+    m = reg.build("ctx_echo", BuildContext(defaults={"value": 0.9}))
+    assert m.score(EvalContext(input="q")).score == 0.9
 
 
-def test_build_with_params():
-    m = _reg().build({"type": "echo", "name": "e", "params": {"bonus": 0.5}})
-    assert m.bonus == 0.5
-
-
-def test_build_from_bare_string_uses_type_as_name():
-    m = _reg().build("echo")
-    assert m.name == "echo"
-
-
-def test_unknown_type_raises_config_error():
+def test_unknown_type_raises():
     with pytest.raises(ConfigError):
-        _reg().build({"type": "does_not_exist"})
+        MetricRegistry().build("nope")
 
 
-def test_registry_lists_registered_types_sorted():
-    reg = _reg()
-    reg.register("alpha", lambda p: _Echo(**p))
-    assert reg.types() == ["alpha", "echo"]
-
-
-def test_default_registry_is_empty_base():
-    # The deterministic built-ins were removed; the base registry is now empty and metric
-    # families are layered on per agent type / by the CLI.
-    assert default_registry().types() == []
+def test_default_registry_has_full_catalog():
+    assert set(default_registry().types()) == EXPECTED_TYPES

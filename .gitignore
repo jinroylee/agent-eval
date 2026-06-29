@@ -20,3 +20,8 @@ htmlcov/
 
 # OS
 .DS_Store
+
+# Generated example artifacts (created by `agent-eval predict` / build_db.py)
+examples/*/predictions.jsonl
+examples/t2s/sample.sqlite
+examples/t2s/gold.csv

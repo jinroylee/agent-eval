@@ -1,4 +1,0 @@
-{"task": "Look up the weather and summarize", "trajectory": [{"tool": "search"}, {"tool": "answer"}], "allowed": [{"tool": "search"}, {"tool": "answer"}, {"tool": "calc"}]}
-{"task": "Compute 3*7 and report", "trajectory": [{"tool": "calc"}, {"tool": "answer"}], "allowed": [{"tool": "search"}, {"tool": "answer"}, {"tool": "calc"}]}
-{"task": "Find a fact and answer", "trajectory": [{"tool": "search"}, {"tool": "answer"}], "allowed": [{"tool": "search"}, {"tool": "answer"}, {"tool": "calc"}]}
-{"task": "Multi-step lookup", "trajectory": [{"tool": "search"}, {"tool": "calc"}, {"tool": "answer"}], "allowed": [{"tool": "search"}, {"tool": "answer"}, {"tool": "calc"}]}

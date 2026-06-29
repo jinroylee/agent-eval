@@ -1,126 +1,113 @@
-# LLM-as-judge governance
+# LLM-as-a-judge
 
-Judges are the only way to score open-ended quality at scale — but the research is emphatic that
-they're **biased measurement instruments**: position/verbosity/self-preference bias, overconfidence,
-and near-random on objectively-checkable tasks. So agent-eval treats a judge as something you
-**certify and pin** before it may gate a release, never grade objective correctness with, and whose
-confidence intervals you **correct against human labels**.
+Four metrics use an LLM judge: `llm_judge` (overall quality), `faithfulness` / `consistency` (RAG
+groundedness), and `t2s_faithfulness` / `t2s_consistency` (T2S groundedness). They share one small
+backend interface, so you wire a model once and every judge metric uses it.
 
-## Anatomy
+> **Confine judges to subjective quality and groundedness — never objective correctness.** T2S query
+> correctness is gated on *execution* (`soft_f1`), and a judge never grades the answer that produced
+> it. This is a deliberate design rule, not an oversight.
 
-```python
-from agent_eval.judges.config import JudgeConfig, JudgeVerdict, Protocol
-from agent_eval.judges.backend import FunctionJudge, DeepEvalJudge   # pluggable backends
-from agent_eval.metrics.judge_ import JudgeMetric                    # the metric (tier=JUDGE)
-```
+## The interface
 
-- **`JudgeConfig`** — pinned by `model | prompt_version | rubric_id` (its `fingerprint()`), plus
-  `protocol` (pointwise/pairwise), `panel` (other judge ids → PoLL), `criteria`, `certification_ref`.
-- **Backend** — a `JudgeBackend` has `evaluate(criteria, ctx) -> JudgeVerdict(score 0..1, confidence,
-  reason)`.
-  - `FunctionJudge(fn)` wraps any `fn(criteria, ctx) -> float | JudgeVerdict` (tests, rule-based).
-  - `DeepEvalJudge(model, criteria)` adapts DeepEval **G-Eval** (lazy; needs `--extra deepeval` + an
-    LLM). Add your own (e.g. an Azure call) by implementing the one method — see
-    [customizing.md](customizing.md).
-- **`JudgeMetric(backend, criteria, panel=…)`** — the scorer. With a `panel`, it averages a
-  **panel-of-judges (PoLL)**; confidence = panel agreement.
+A metric builds a structured `JudgeRequest`; a backend returns a `JudgeVerdict`:
 
 ```python
-m = JudgeMetric(backend=FunctionJudge(lambda crit, ctx: 0.9 if "helpful" in str(ctx.output) else 0.2),
-                criteria="helpfulness, correctness, instruction-following")
-m.score(EvalContext("q", "a helpful answer")).score   # 0.9
+@dataclass(frozen=True)
+class JudgeRequest:
+    instruction: str                 # the rubric — what to grade and how
+    question: str = ""               # the user input, if relevant
+    response: str = ""               # the response under test (graded)
+    reference: str = ""              # gold answer, if grading against ground truth
+    context: Sequence[str] = ()      # evidence (retrieved chunks, executed rows)
+    scale: tuple[int, int] = (1, 5)  # integer score range to ask for
+
+@dataclass(frozen=True)
+class JudgeVerdict:
+    score: float                     # normalized to [0, 1]
+    confidence: float | None = None
+    reason: str = ""
 ```
 
-### Panel-of-judges & pairwise
+Three backends ship (`agent_eval.judges.backend`):
+
+- **`LLMJudge(complete, name)`** — provider-agnostic. You pass a `complete(prompt) -> text` callable,
+  so any model works without this package depending on any SDK. It renders the request into a prompt
+  asking for `SCORE: <int>` + `REASON: …`, then parses and normalizes the score.
+- **`FunctionJudge(fn)`** — wraps `fn(request) -> float | JudgeVerdict`, for deterministic/offline
+  judging and tests.
+- **`lexical_overlap_judge`** — a ready-made deterministic stub (token overlap) so the examples run
+  with **no API key**. It's a stand-in, not a real judge — scores are crude.
+
+When no judge is configured, the judge metrics fall back to the lexical stub.
+
+## Wiring a real Claude judge
+
+Point your config's `judge.factory` at a function returning a backend:
+
+```yaml
+judge:
+  factory: my_pkg.judges:claude_judge
+```
 
 ```python
-from agent_eval.judges.panel import poll_pointwise, pairwise_swap_average
-score, confidence = poll_pointwise([judge_a, judge_b, judge_c], criteria, ctx)  # diverse families
-# pairwise with position-bias mitigation: run both orderings; flip => tie
-winner = pairwise_swap_average(compare_fn, criteria, candidate_a, candidate_b)   # +1 / -1 / 0
+# my_pkg/judges.py
+from agent_eval.judges.backend import LLMJudge
+
+def claude_judge(model: str = "claude-opus-4-8") -> LLMJudge:
+    import anthropic
+    client = anthropic.Anthropic()              # reads ANTHROPIC_API_KEY
+
+    def complete(prompt: str) -> str:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=512,
+            output_config={"effort": "low"},     # grading one response is a small, scoped task
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return "".join(b.text for b in resp.content if b.type == "text")
+
+    return LLMJudge(complete, name="claude")
 ```
 
-Use a **diverse-family** panel (and never a judge from the same family as the agent's generator) to
-cancel self-preference bias.
+A runnable version (single judge + a PoLL panel) ships at [`../examples/judges.py`](../examples/judges.py).
 
-## Certify before you trust
+```bash
+uv pip install anthropic && export ANTHROPIC_API_KEY=...
+```
 
-A judge may gate a release only if it has a passing, fresh certification. Certify it against a small
-human-labeled meta-set:
+## Panel of judges (PoLL)
+
+A small, diverse panel of judges correlates with human ratings as well as a single large judge,
+costs less, and cancels the self-preference bias a lone judge can't see in itself. Return a **list**
+of backends from your factory and the framework averages their scores, reporting panel agreement
+(`1 − spread`) as the verdict's `confidence`:
 
 ```python
-from agent_eval.judges.certify import certify_judge
-from agent_eval.judges.registry import JudgeRegistry
-
-meta = [(EvalContext("q", "great answer"), 1.0), (EvalContext("q", "wrong"), 0.0), ...]  # human labels
-record = certify_judge(
-    judge_id="nl_intent_judge", backend=my_backend, criteria="...",
-    samples=meta, fingerprint="claude-judge@2026-01|v3|t2s_nl_intent",
-    kappa_floor=0.6, bias_floor=0.8,
-)
-record.passed       # True only if human-agreement kappa >= floor AND consistency >= floor
-record.kappa, record.bias_robustness, record.n
-
-reg = JudgeRegistry()
-reg.register(judge_config)            # the JudgeConfig
-reg.add_certification(record)
-reg.is_certified(record.id, judge_config.fingerprint())   # True
+def claude_panel() -> list[LLMJudge]:
+    return [
+        LLMJudge(_claude_complete("claude-opus-4-8"),  name="opus"),
+        LLMJudge(_claude_complete("claude-sonnet-4-6"), name="sonnet"),
+    ]
 ```
 
-`certify_judge` computes **Cohen's kappa** (chance-corrected agreement with humans) and a run-to-run
-**consistency** proxy. The record is bound to the judge's **fingerprint** — change the model, prompt,
-or rubric and the certification goes **stale** (`is_certified` returns `False`).
-
-## The gate refuses uncertified judges
-
-When a judge metric is used by a gate (it's in `gate.thresholds`/`require_pass`), suite build-out
-enforces certification:
-
-```python
-from agent_eval.judges.governance import assert_gated_judges_certified
-from agent_eval.core.errors import UncertifiedJudge
-
-assert_gated_judges_certified(cfg, "response", reg)   # raises UncertifiedJudge if missing/stale/failed
+```yaml
+judge:
+  factory: my_pkg.judges:claude_panel
 ```
 
-A judge that is only **informational** (not referenced by the gate) is allowed — you can *observe*
-an uncertified judge, you just can't *gate* on it. This is a hard invariant: a model-provider update
-that silently shifts scores invalidates the (pinned) certification rather than corrupting your gate.
+The first backend is the primary; the rest form the panel. Low agreement on an item flags it for a
+human to look at — it doesn't change the gate automatically.
 
-## Valid confidence intervals despite judge bias (PPI)
+## The rubrics
 
-Naive CIs on judge scores assume the judge is ground truth. Wrap many cheap judge labels around a
-small **human gold** subset with Prediction-Powered Inference so the interval stays valid:
+Each judge metric sends a fixed, purpose-built rubric (override `llm_judge`'s via its `criteria`
+param):
 
-```python
-from agent_eval.judges.governance import judge_gate_ci
-theta, lo, hi = judge_gate_ci(judge_scores_all, human_labels_subset, gold_idx, alpha=0.05)
-```
-
-When the judge is uninformative (noise), PPI **degrades to the gold-only interval** — so a biased or
-useless judge can't manufacture false confidence.
-
-## Full example: wire a real G-Eval judge into a gate
-
-```python
-from agent_eval.judges.backend import DeepEvalJudge
-from agent_eval.judges.certify import certify_judge
-from agent_eval.judges.registry import JudgeRegistry
-from agent_eval.judges.config import JudgeConfig
-from agent_eval.metrics.judge_ import JudgeMetric
-
-criteria = "Does the explanation faithfully describe what the SQL computes?"
-backend  = DeepEvalJudge(model="azure/gpt-4o", criteria=criteria)        # needs --extra deepeval + creds
-config   = JudgeConfig(id="nl_intent", model="azure/gpt-4o", prompt_version="v1",
-                       rubric_id="t2s_nl_intent", criteria=criteria, certification_ref="cert::nl_intent")
-
-reg = JudgeRegistry(); reg.register(config)
-reg.add_certification(certify_judge("nl_intent", backend, criteria, human_meta,
-                                    fingerprint=config.fingerprint()))
-
-# ... assert_gated_judges_certified(cfg, "response", reg) must pass before this metric gates:
-metric = JudgeMetric(backend=backend, criteria=criteria)
-```
-
-> Tests drive judges through `FunctionJudge` stubs so they're deterministic and offline; the live
-> `DeepEvalJudge` path activates only when you configure a real model + credentials.
+| metric | grades |
+|---|---|
+| `llm_judge` | Completeness, Clarity, Usefulness, Relevance, Friendliness (vs. the reference if one is given) |
+| `faithfulness` | every claim in the answer is **supported by** the retrieved chunks |
+| `consistency` | the answer does **not contradict** the retrieved chunks |
+| `t2s_faithfulness` | the NL answer faithfully reports the **executed query result** |
+| `t2s_consistency` | the NL answer does not contradict the executed query result |

@@ -1,9 +1,8 @@
 """Gate policy and verdict logic.
 
-A gate turns per-metric statistical aggregates into a pass/fail decision. In P0 this is
-threshold-based (point estimate vs threshold, with a Wilson CI reported alongside). The
-regression path (paired McNemar / bootstrap vs a frozen baseline, with BH-FDR) plugs in later
-through the same ``GatePolicy`` fields (``min_effect``, ``significance_alpha``, ``fdr``).
+A gate turns per-metric aggregates into a pass/fail decision: every metric that has a configured
+threshold must meet it (direction-aware — ``recall_at_k >= 0.7`` but ``p95_latency <= 2000``), and
+``require_pass`` metrics are hard ship-blockers that must have actually run.
 """
 
 from __future__ import annotations
@@ -11,25 +10,29 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from agent_eval.core.contracts import Aggregation
+
 
 @dataclass
 class GatePolicy:
     thresholds: Mapping[str, float] = field(default_factory=dict)
     require_pass: Sequence[str] = ()
-    min_effect: float = 0.0
-    significance_alpha: float = 0.05
-    fdr: bool = True
 
 
 @dataclass
 class MetricAggregate:
     metric: str
-    value: float  # pass-rate (binary) or mean (continuous)
+    value: float  # pass-rate (RATE), mean (MEAN), or 95th percentile (P95)
     ci_low: float
     ci_high: float
     n: int
     n_errors: int
-    binary: bool
+    aggregation: Aggregation
+    higher_is_better: bool = True
+
+
+def _meets(value: float, threshold: float, higher_is_better: bool) -> bool:
+    return value >= threshold if higher_is_better else value <= threshold
 
 
 @dataclass
@@ -40,8 +43,8 @@ class GateVerdict:
 
 
 def decide_gate(aggregates: Sequence[MetricAggregate], policy: GatePolicy) -> GateVerdict:
-    """Threshold gate: every metric with a threshold must meet it; require_pass metrics are
-    hard blockers (and must have actually run)."""
+    """Threshold gate: every metric with a threshold must meet it (in its own direction);
+    ``require_pass`` metrics are hard blockers (and must have actually produced an aggregate)."""
     metric_passed: dict[str, bool] = {}
     reasons: list[str] = []
     overall = True
@@ -51,15 +54,16 @@ def decide_gate(aggregates: Sequence[MetricAggregate], policy: GatePolicy) -> Ga
         threshold = policy.thresholds.get(agg.metric)
         if threshold is None:
             metric_passed[agg.metric] = True  # informational only
-            continue
-        passed = agg.value >= threshold
-        metric_passed[agg.metric] = passed
-        if not passed:
-            reasons.append(
-                f"{agg.metric}={agg.value:.3f} < threshold {threshold:.3f} "
-                f"(95% CI [{agg.ci_low:.3f}, {agg.ci_high:.3f}], n={agg.n})"
-            )
-            overall = False
+        else:
+            passed = _meets(agg.value, threshold, agg.higher_is_better)
+            metric_passed[agg.metric] = passed
+            if not passed:
+                op = ">=" if agg.higher_is_better else "<="
+                reasons.append(
+                    f"{agg.metric}={agg.value:.3f} fails {op} {threshold:.3f} "
+                    f"(95% CI [{agg.ci_low:.3f}, {agg.ci_high:.3f}], n={agg.n})"
+                )
+                overall = False
         if agg.n_errors > 0:
             reasons.append(f"{agg.metric}: {agg.n_errors} item(s) errored")
 

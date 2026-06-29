@@ -1,0 +1,5 @@
+{"question": "How do I reset my password?", "reference": "Go to Settings > Security and click 'Reset password'. You'll get an email with a link that lets you choose a new password."}
+{"question": "What are your support hours?", "reference": "Our support team is available 24/7 by chat and email."}
+{"question": "Where can I download invoices?", "reference": "Open Billing > Invoices, then click the download icon next to any invoice to get a PDF."}
+{"question": "How do I cancel my subscription?", "reference": "You can cancel anytime under Billing > Subscription by clicking 'Cancel plan'. Your plan stays active until the end of the current billing period."}
+{"question": "How do I export my data?", "reference": "Open Settings > Data and click 'Export' to download a full archive of your account data."}

@@ -1,8 +1,11 @@
-"""Bring-your-own-dataset core: normalize arbitrary user records into EvalContext.
+"""Bring-your-own-dataset core: normalize arbitrary records into the canonical eval shape.
 
-Users point a ``field_map`` (target -> source column/key) at their data. Targets that are
-EvalContext fields populate the context; any other target lands in ``metadata`` (e.g. ``schema``,
-``db_ref``); unmapped columns are preserved in ``metadata`` too so nothing is lost.
+A ``field_map`` (target -> source column/key) projects user records onto the canonical fields the
+metrics read. Targets that are :class:`EvalContext` fields populate the context; every other target
+lands in ``metadata`` (e.g. ``relevant_ids``, ``sql``, ``db_ref``). A nested ``metadata`` dict in the
+record is merged in. Unmapped columns are preserved in ``metadata`` so nothing is silently dropped.
+
+The prediction harness writes records already in canonical shape, so they load with no field_map.
 """
 
 from __future__ import annotations
@@ -14,14 +17,15 @@ from typing import Any, Protocol, runtime_checkable
 from agent_eval.core.contracts import EvalContext
 from agent_eval.core.errors import ConfigError
 
-KNOWN_FIELDS = frozenset({"input", "output", "expected", "retrieved_context", "trajectory"})
+# EvalContext fields that can be a field_map/state_map target; anything else -> metadata.
+CONTEXT_FIELDS = frozenset({"input", "output", "expected", "retrieved_context"})
 
 
 @dataclass
 class DatasetSpec:
     adapter: str  # "jsonl" | "tabular"
     path: str
-    format: str | None = None  # csv | excel | parquet | jsonl (inferred from extension if None)
+    format: str | None = None  # csv | tsv | excel | parquet (inferred from extension if None)
     field_map: Mapping[str, str] = field(default_factory=dict)
     include_unmapped: bool = True
 
@@ -39,17 +43,17 @@ def _as_tuple(value: Any) -> tuple:
     return (value,)
 
 
-def record_to_context(
+def to_canonical(
     record: Mapping[str, Any],
     field_map: Mapping[str, str] | None = None,
     include_unmapped: bool = True,
-) -> EvalContext:
-    """Map one source record to an EvalContext via ``field_map`` (target -> source key)."""
+) -> dict[str, Any]:
+    """Project a source record onto ``{input, output, expected, retrieved_context, metadata}``."""
     if not field_map:
-        field_map = {k: k for k in KNOWN_FIELDS if k in record}
+        field_map = {k: k for k in CONTEXT_FIELDS if k in record}
 
-    kwargs: dict[str, Any] = {}
-    metadata: dict[str, Any] = {}
+    out: dict[str, Any] = {"metadata": {}}
+    metadata: dict[str, Any] = out["metadata"]
     used: set[str] = set()
     for target, source in field_map.items():
         used.add(source)
@@ -57,23 +61,36 @@ def record_to_context(
         if target == "metadata":
             if isinstance(value, Mapping):
                 metadata.update(value)
-        elif target in KNOWN_FIELDS:
-            kwargs[target] = value
+        elif target in CONTEXT_FIELDS:
+            out[target] = value
         else:
             metadata[target] = value
 
+    # A nested metadata dict in the record (canonical records have one) is merged in.
+    if isinstance(record.get("metadata"), Mapping) and "metadata" not in field_map:
+        metadata.update(record["metadata"])
+        used.add("metadata")
+
     if include_unmapped:
         for key, value in record.items():
-            if key not in used and key not in metadata:
+            if key not in used and key not in metadata and key not in CONTEXT_FIELDS:
                 metadata[key] = value
+    return out
 
+
+def record_to_context(
+    record: Mapping[str, Any],
+    field_map: Mapping[str, str] | None = None,
+    include_unmapped: bool = True,
+) -> EvalContext:
+    """Map one source record to an EvalContext via ``field_map`` (target -> source key)."""
+    c = to_canonical(record, field_map, include_unmapped)
     return EvalContext(
-        input=kwargs.get("input"),
-        output=kwargs.get("output"),
-        expected=kwargs.get("expected"),
-        retrieved_context=_as_tuple(kwargs.get("retrieved_context")),
-        trajectory=_as_tuple(kwargs.get("trajectory")),
-        metadata=metadata,
+        input=c.get("input"),
+        output=c.get("output"),
+        expected=c.get("expected"),
+        retrieved_context=_as_tuple(c.get("retrieved_context")),
+        metadata=c["metadata"],
     )
 
 
@@ -87,4 +104,17 @@ def load_dataset(spec: DatasetSpec) -> Iterable[EvalContext]:
         from agent_eval.datasets.tabular import TabularAdapter
 
         return TabularAdapter(spec.path, spec.field_map, spec.format, spec.include_unmapped)
+    raise ConfigError(f"unknown dataset adapter {spec.adapter!r}")
+
+
+def load_records(spec: DatasetSpec) -> list[dict]:
+    """Load the *raw* source records (dicts), before field-mapping — used by the prediction harness."""
+    if spec.adapter == "jsonl":
+        from agent_eval.datasets.jsonl import read_jsonl_records
+
+        return read_jsonl_records(spec.path)
+    if spec.adapter == "tabular":
+        from agent_eval.datasets.tabular import read_tabular_records
+
+        return read_tabular_records(spec.path, spec.format)
     raise ConfigError(f"unknown dataset adapter {spec.adapter!r}")

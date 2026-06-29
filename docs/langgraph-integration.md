@@ -1,200 +1,148 @@
-# Evaluating & critiquing a LangGraph agent
+# Evaluating your LangGraph agent
 
-This is the end-to-end guide: how to point agent-eval at a real LangGraph agent, both **offline**
-(score it before deploy) and **at runtime** (critique it in-flight), at **whatever graph level** you
-choose.
+This is the worked guide to pointing the framework at *your* compiled LangGraph and getting a gated
+verdict. The only thing the framework needs from your agent is a small **state contract**: which
+fields of your graph's final state hold the things the metrics score.
 
-> Requires the instrumentation extra: `uv sync --extra agentevals` (pulls in `langgraph`,
-> `langchain-core`). The T2S example below also wants `--extra t2s`.
+```
+ your gold dataset ──► agent-eval predict ──► predictions.jsonl ──► agent-eval evaluate ──► verdict
+                       (runs your graph)                            (scores + gate)
+```
 
-## Two ways to attach
+Install the extra that lets the harness drive a graph:
 
-| | **Observational** (`attach: observe`) | **Active** (`attach: active`) |
+```bash
+uv sync --extra langgraph        # add --extra t2s for text-to-SQL metrics
+```
+
+## 1. The state contract
+
+The harness invokes your compiled graph once per input and reads the **final state dict**. You tell
+it which state keys map onto the canonical fields the metrics read, via the config's `state_map`
+(`canonical field: your state key`). The canonical fields and the metrics that read them:
+
+| canonical field | where it goes | read by |
 |---|---|---|
-| What it does | Runs the graph **unmodified**, captures per-level I/O, scores **post-hoc** | **Injects a critic node** that routes the graph (retry/fallback) in-flight |
-| Touches your graph? | No | Yes (you add a node + edge) |
-| Use for | Offline evaluation; production observability | The runtime critic (retry/fallback/escalate) |
-| Mechanism | `astream_events(version="v2")` capture | `make_critic_node` → `Command(goto=…)` |
+| `output` | `EvalContext.output` | `llm_judge`, `bertscore`, `faithfulness`, `consistency`, `t2s_*` |
+| `retrieved_context` | `EvalContext.retrieved_context` | `faithfulness`, `consistency` |
+| `retrieved_ids` | `metadata['retrieved_ids']` | `recall_at_k`, `precision_at_k`, `ndcg_at_k` |
+| `sql` | `metadata['sql']` | `soft_f1`, `component_match`, `ast_valid`, `t2s_*` |
+| `tokens` | `metadata['tokens']` | `token_usage` |
 
-## A tiny example agent
+`latency_ms` is filled automatically (the harness times each run). Anything not in the canonical set
+lands in `metadata` under its own name. The full field reference is in [metrics.md](metrics.md).
 
-A two-node text-to-SQL graph: `generate_sql` turns a question into SQL, `run_query` executes it.
+Expose whatever a metric needs as a key in your graph's state. For example, a RAG agent should put
+the ranked ids it retrieved and the chunk texts into its state so retrieval and groundedness can be
+scored:
 
 ```python
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 
-class State(TypedDict):
-    question: str
-    sql: str
-    db: str
-    answer: str
+class RagState(TypedDict, total=False):
+    input: str                    # the question (the harness sets this)
+    retrieved_ids: list[str]      # ranked doc ids   → recall/precision/ndcg
+    retrieved_context: list[str]  # chunk texts      → faithfulness/consistency
+    output: str                   # the final answer → llm_judge
+    tokens: int
 
-def generate_sql(state: State):
-    sql = my_text_to_sql(state["question"], hint=state.get("_critique"))  # your model
-    return {"sql": sql}
-
-def run_query(state: State):
-    return {"answer": execute(state["sql"], state["db"])}  # your DB call
-
-g = StateGraph(State)
-g.add_node("generate_sql", generate_sql)
-g.add_node("run_query", run_query)
-g.add_edge(START, "generate_sql")
-g.add_edge("generate_sql", "run_query")
-g.add_edge("run_query", END)
-app = g.compile()
+# ... add nodes ...
+graph = builder.compile()         # the config points at this object
 ```
 
-## 1. Topology introspection (validate your targets up front)
+## 2. The gold dataset
 
-Before any run, confirm your eval targets name real nodes — fail fast with the list of valid ones:
+A file (JSONL or CSV/Excel/Parquet) with your inputs and whatever ground truth you have. Only the
+GT metrics need labels; reference-free metrics need none.
 
-```python
-from agent_eval.instrumentation.topology import introspect, validate_selector
-from agent_eval.core.contracts import EvalTarget, Level
-
-idx = introspect(app)
-idx.nodes        # {'generate_sql', 'run_query'}   (__start__/__end__ excluded)
-idx.edges        # [('__start__','generate_sql'), ('generate_sql','run_query'), ...]
-
-validate_selector(idx, EvalTarget(level=Level.NODE, selector="generate_sql"))   # ok
-validate_selector(idx, EvalTarget(level=Level.NODE, selector="typo"))           # raises SelectorNotFound
+```jsonl
+{"question": "What is the capital of France?", "relevant": ["d1","d2"], "reference": "Paris is the capital of France."}
 ```
 
-## 2. Observe — capture I/O at any level (non-intrusive)
-
-`observe` runs the graph and returns one `EvalContext` per requested target. The same `EvalContext`
-shape is produced at every level — only which fields are filled differs:
-
-| Level | `input` | `output` |
-|---|---|---|
-| `GRAPH` (`selector="*"`) | the graph input | the final state |
-| `NODE` | that node's input state | that node's output state |
-| `TOOL` | the call args | the tool result |
-| `SUBGRAPH` | boundary input | boundary state |
-
-```python
-import asyncio
-from agent_eval.instrumentation.observe import observe
-
-targets = [
-    EvalTarget(level=Level.NODE,  selector="generate_sql"),  # capture the produced SQL
-    EvalTarget(level=Level.GRAPH, selector="*"),             # capture the final answer
-]
-contexts = asyncio.run(observe(app, {"question": "How many employees?", "db": "co.sqlite"}, targets))
-
-by_level = {c.metadata["level"]: c for c in contexts}
-generated_sql = by_level["node"].output      # {'sql': 'SELECT COUNT(*) ...'}
-final_state   = by_level["graph"].output     # {'question': ..., 'sql': ..., 'answer': ...}
-```
-
-## 3. Offline evaluation of the captured agent
-
-Run the agent over your golden dataset, capture the level you care about, score it, gate it. Here we
-score the **generated SQL** with **Execution Accuracy** (a deterministic, execution-grounded check —
-no LLM judging correctness):
-
-```python
-from agent_eval.core.contracts import EvalContext
-from agent_eval.core.gate import GatePolicy
-from agent_eval.core.suite import Suite
-from agent_eval.metrics.ast_query_ import ExecutionAccuracy
-from agent_eval.offline.runner import evaluate
-
-async def captured_sql(question, db):
-    [node_ctx] = await observe(app, {"question": question, "db": db},
-                               [EvalTarget(level=Level.NODE, selector="generate_sql")])
-    return node_ctx.output["sql"]
-
-# gold = [{"question": ..., "gold_sql": ..., "db": "co.sqlite"}, ...]
-dataset = [
-    EvalContext(input=row["question"], output=asyncio.run(captured_sql(row["question"], row["db"])),
-                expected=row["gold_sql"], metadata={"db_ref": row["db"]})
-    for row in gold
-]
-suite = Suite("t2s", "search", [ExecutionAccuracy()],
-              GatePolicy(thresholds={"execution_accuracy": 0.8}, require_pass=["execution_accuracy"]))
-print(evaluate(suite, dataset).verdict.passed)
-```
-
-In practice you'd capture once and run a whole suite of metrics. For a *non-LangGraph* agent, skip
-`observe` entirely and build `EvalContext`s directly from your agent's outputs — the offline runner
-doesn't care where the outputs came from.
-
-## 4. Active — inject a runtime critic that retries
-
-Now wire the critic **onto the graph** so a bad query is caught and regenerated before it executes.
-`make_critic_node` builds a node that runs the critic and routes via `Command`:
-
-```python
-from langgraph.graph import StateGraph, START, END
-from agent_eval.instrumentation.active_node import make_critic_node
-from agent_eval.agents.t2s.critic import build_t2s_critic
-from agent_eval.config.loader import load_config
-from agent_eval.core.contracts import EvalContext
-
-cfg = load_config("t2s.yaml")
-critic = build_t2s_critic(cfg)   # tier-1: AST validity → schema linking → dry-run execution
-
-critic_node = make_critic_node(
-    critic,
-    build_ctx=lambda s: EvalContext(input=s["question"], output=s["sql"], metadata={"db_ref": s["db"]}),
-    on_accept="run_query",     # valid SQL → execute
-    on_retry="generate_sql",   # invalid → regenerate (with critique injected into state)
-    on_fallback="give_up",     # exhausted retries → safe fallback
-)
-
-g = StateGraph(State)
-g.add_node("generate_sql", generate_sql)   # reads state["_critique"] on retry to repair
-g.add_node("critic", critic_node)
-g.add_node("run_query", run_query)
-g.add_node("give_up", lambda s: {"answer": "(could not produce a valid query)"})
-g.add_edge(START, "generate_sql")
-g.add_edge("generate_sql", "critic")       # after generating, critique before executing
-g.add_edge("run_query", END)
-g.add_edge("give_up", END)
-app = g.compile()                          # critic_node's Command(goto=…) handles its own routing
-```
-
-What happens at runtime:
-
-1. `generate_sql` produces SQL → control goes to `critic`.
-2. The critic runs the deterministic tier (parse → schema-link → dry-run). 
-   - **valid** → `Command(goto="run_query")` (continue).
-   - **invalid**, retries remain → `Command(goto="generate_sql", update={"_critic_attempt": n+1, "_critique": "<grounded error>"})`. Your `generate_sql` reads `state["_critique"]` to fix the query.
-   - **invalid**, retries exhausted (or no progress) → `Command(goto="give_up")`.
-
-The execution harness *is* the verifier here — no LLM grades correctness. The grounded error (e.g.
-*"no such table: emp"*) is injected so the next attempt can actually fix it.
-
-> Tool-call critique works the same way: build the critic with `build_orchestration_critic(cfg)`
-> (BFCL-style tool-arg validity), put the critic node after your tool-calling node, and have
-> `build_ctx` pull the planned tool call into `EvalContext.trajectory`. A dedicated `active_tool`
-> ToolNode-wrapper is on the roadmap; `make_critic_node` covers the pattern today.
-
-## 5. Choosing the level (declaratively)
-
-Your config declares the target per suite; the loader turns it into an `EvalTarget`:
+## 3. The config
 
 ```yaml
+version: 1
+agent_type: rag
+defaults: {k: 3}
+
+datasets:
+  gold:                                    # your labels
+    adapter: jsonl
+    path: data/gold.jsonl
+    field_map: {input: question, expected: reference, relevant_ids: relevant}
+  predictions:                             # written by `predict`, read by `evaluate`
+    adapter: jsonl
+    path: data/predictions.jsonl
+
+prediction:
+  graph: my_pkg.agent:graph                # "module:attr" or "path/to/agent.py:graph"
+  source: gold                             # dataset of inputs to run the agent on
+  target: predictions                      # dataset to write predictions into
+  input_key: input                         # graph state key the question is passed under
+  state_map:                               # canonical field <- your graph state key
+    retrieved_ids: retrieved_ids
+    retrieved_context: retrieved_context
+    output: output
+
 suites:
-  search:   {target: {level: tool,  selector: run_query,    attach: observe}, ...}
-  response: {target: {level: node,   selector: explain,      attach: observe}, ...}
-  scenario: {target: {level: graph,  selector: "*",          attach: observe}, ...}
+  retrieval:
+    dataset: predictions
+    metrics: [recall_at_k, precision_at_k, ndcg_at_k]
+    gate: {thresholds: {recall_at_k: 0.7}, require_pass: [recall_at_k]}
+  response:
+    dataset: predictions
+    metrics: [faithfulness, consistency, llm_judge]
+    gate: {thresholds: {faithfulness: 0.6}, require_pass: [faithfulness]}
 ```
 
-- **graph / subgraph** → end-to-end or flow-boundary behavior (scenario tests, latency).
-- **node** → a specific step's output quality (e.g. the generated SQL, the drafted answer).
-- **tool** → a single tool call's args and result (validate before it runs; check what it returned).
+`field_map` (target ← source) maps your gold columns onto canonical fields; `state_map` (target ←
+graph key) does the same for your agent's output. Both share one vocabulary — top-level fields
+(`input`, `output`, `expected`, `retrieved_context`) and metadata keys (everything else). Full
+reference: [configuration.md](configuration.md).
 
-Use **observe** to score any level non-intrusively; use **active** to actually intervene at a node or
-tool. Both paths converge on the same `EvalContext` and the same metrics/critic — so a metric you
-trust offline is the exact check you run in-flight.
+## 4. Run it
 
-## Recap
+```bash
+uv run agent-eval predict  -c eval.yaml      # runs your graph → predictions.jsonl
+uv run agent-eval evaluate -c eval.yaml      # scores + gates (exit non-zero on failure)
+```
 
-- `introspect` / `validate_selector` — discover the graph, fail fast on bad selectors.
-- `observe` — non-intrusive capture at graph/subgraph/node/tool → `EvalContext`s → offline `evaluate`.
-- `make_critic_node` — inject a `Critic` that routes the graph via `Command` (retry/fallback).
-- The **same** `Critic` and metrics power both, with thresholds calibrated offline.
+`predict` merges each gold record with the prediction your agent produced and writes a ready-to-score
+predictions file. `evaluate` then runs the suites and prints a gated report.
+
+## Resolving the graph
+
+`prediction.graph` is `module:attr` (an importable package) or `path/to/file.py:attr` (a script —
+its directory is put on `sys.path` so it can import siblings). The attribute must be either:
+
+- a **compiled graph** (anything with `.invoke`), or
+- a **zero-arg factory** returning one.
+
+`run_once` calls `graph.invoke({input_key: question})` and reads the returned state dict. If your
+graph needs a richer input shape than a single key, wrap it in a small factory that adapts it.
+
+## Driving it from Python
+
+Everything the CLI does is available as a library:
+
+```python
+from agent_eval.config.loader import load_config, build_suite, build_dataset_spec
+from agent_eval.core.registry import default_registry
+from agent_eval.datasets.base import load_dataset
+from agent_eval.harness.predict import predict
+from agent_eval.offline.runner import evaluate
+
+cfg = load_config("eval.yaml")
+predict(cfg)                                                   # fill predictions
+suite = build_suite(cfg, "retrieval", default_registry())
+result = evaluate(suite, load_dataset(build_dataset_spec(cfg, "predictions")))
+print(result.verdict.passed)
+```
+
+## Not using LangGraph?
+
+The harness is a convenience. If you already have predictions (from any agent, in any framework),
+skip `predict` entirely: write a predictions file with the canonical fields and run `evaluate`
+directly. `output` is just "the final response"; `metadata` carries the rest.

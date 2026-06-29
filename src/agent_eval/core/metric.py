@@ -1,9 +1,9 @@
-"""The single Metric contract every scorer implements, plus a BaseMetric with shared plumbing.
+"""The single ``Metric`` contract every scorer implements, plus ``BaseMetric`` with shared plumbing.
 
-OSS libraries (DeepEval, RAGAS, agentevals, Inspect) and in-house checks all become metrics by
-subclassing ``BaseMetric`` and implementing ``_compute`` (and optionally ``_acompute``). BaseMetric
-handles requirement-checking, the sync/async bridge, score normalization, latency capture, and
-turning exceptions into ``MetricResult(error=...)`` rather than crashing a run.
+In-house checks and OSS adapters (BERTScore, an LLM judge) all become metrics by subclassing
+:class:`BaseMetric` and implementing ``_compute``. BaseMetric handles required-field validation, the
+sync/async bridge, optional [0, 1] normalization, latency capture, and turning exceptions into
+``MetricResult(error=...)`` so one metric can never crash a whole run.
 """
 
 from __future__ import annotations
@@ -12,20 +12,19 @@ from dataclasses import replace
 from time import perf_counter
 from typing import Protocol, runtime_checkable
 
-from agent_eval.core.contracts import CostClass, EvalContext, MetricResult, Mode, Tier
-
-_DEFAULT_MODES = frozenset({Mode.OFFLINE, Mode.RUNTIME})
+from agent_eval.core.contracts import Aggregation, CostClass, EvalContext, MetricResult
 
 
 @runtime_checkable
 class Metric(Protocol):
-    """Structural type for anything the runner/critic can call."""
+    """Structural type for anything the runner can score with."""
 
     name: str
-    tier: Tier
-    modes: frozenset[Mode]
     requires: frozenset[str]
     cost_class: CostClass
+    aggregation: Aggregation
+    higher_is_better: bool
+    unit_interval: bool  # are scores bounded to [0, 1]? (False for latency/token magnitudes)
 
     def score(self, ctx: EvalContext) -> MetricResult: ...
     async def ascore(self, ctx: EvalContext) -> MetricResult: ...
@@ -39,10 +38,11 @@ class BaseMetric:
     """
 
     name: str = ""
-    tier: Tier = Tier.DETERMINISTIC
-    modes: frozenset[Mode] = _DEFAULT_MODES
     requires: frozenset[str] = frozenset()
-    cost_class: CostClass = CostClass.CHEAP
+    cost_class: CostClass = CostClass.FREE
+    aggregation: Aggregation = Aggregation.MEAN
+    higher_is_better: bool = True
+    unit_interval: bool = True  # clamp score to [0, 1]? (False for raw values like latency/tokens)
 
     # --- subclass hooks ---------------------------------------------------
     def _compute(self, ctx: EvalContext) -> MetricResult:
@@ -91,7 +91,9 @@ class BaseMetric:
         )
 
     def _finalize(self, result: MetricResult, latency_ms: float) -> MetricResult:
-        score = min(max(float(result.score), 0.0), 1.0)  # normalize to [0, 1]
+        score = float(result.score)
+        if self.unit_interval:
+            score = min(max(score, 0.0), 1.0)
         cost = result.cost
         if cost.latency_ms == 0.0:
             cost = replace(cost, latency_ms=latency_ms)

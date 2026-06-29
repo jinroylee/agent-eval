@@ -1,61 +1,125 @@
-"""Judge backends — pluggable scorers behind one interface.
+"""LLM-as-a-judge backends — pluggable scorers behind one small interface.
 
-``FunctionJudge`` wraps a callable (used in tests and for simple rule-based judges).
-``DeepEvalJudge`` adapts DeepEval's G-Eval (lazy import; needs the ``[deepeval]`` extra + an LLM).
+A metric builds a structured :class:`JudgeRequest` (instruction + the fields to grade); a backend
+turns it into a :class:`JudgeVerdict` (score in ``[0, 1]`` + reason). Three backends ship:
+
+- :class:`LLMJudge`   — provider-agnostic: you pass a ``complete(prompt) -> text`` callable, so any
+  model (Claude, GPT, a local model) works without this package depending on any SDK.
+- :class:`FunctionJudge` — wraps ``fn(request) -> score`` for deterministic/offline judging + tests.
+- :func:`lexical_overlap_judge` — a ready-made deterministic stub (token-overlap) so the bundled
+  examples run with no API key; swap in :class:`LLMJudge` for real evaluation.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from agent_eval.core.contracts import EvalContext
-from agent_eval.judges.config import JudgeVerdict
+
+@dataclass(frozen=True)
+class JudgeRequest:
+    """A self-contained grading task. A metric fills the fields relevant to what it measures."""
+
+    instruction: str  # the rubric: what to grade and how
+    question: str = ""  # the user input, if relevant
+    response: str = ""  # the response under test (graded)
+    reference: str = ""  # gold answer, if grading against ground truth
+    context: Sequence[str] = field(default_factory=tuple)  # evidence (chunks, execution rows)
+    scale: tuple[int, int] = (1, 5)  # integer score range the judge is asked to use
+
+
+@dataclass(frozen=True)
+class JudgeVerdict:
+    score: float  # normalized to [0, 1]
+    confidence: float | None = None
+    reason: str = ""
 
 
 @runtime_checkable
 class JudgeBackend(Protocol):
-    def evaluate(self, criteria: str, ctx: EvalContext) -> JudgeVerdict: ...
+    def evaluate(self, request: JudgeRequest) -> JudgeVerdict: ...
 
 
 class FunctionJudge:
-    """Wrap ``fn(criteria, ctx) -> float in [0, 1]`` (or a JudgeVerdict) as a JudgeBackend."""
+    """Wrap ``fn(request) -> float in [0, 1]`` (or a JudgeVerdict) as a JudgeBackend."""
 
-    def __init__(self, fn: Callable[[str, EvalContext], float | JudgeVerdict]) -> None:
+    def __init__(self, fn: Callable[[JudgeRequest], float | JudgeVerdict]) -> None:
         self._fn = fn
 
-    def evaluate(self, criteria: str, ctx: EvalContext) -> JudgeVerdict:
-        out = self._fn(criteria, ctx)
-        if isinstance(out, JudgeVerdict):
-            return out
-        return JudgeVerdict(float(out))
+    def evaluate(self, request: JudgeRequest) -> JudgeVerdict:
+        out = self._fn(request)
+        return out if isinstance(out, JudgeVerdict) else JudgeVerdict(float(out))
 
 
-class DeepEvalJudge:
-    """Adapter over DeepEval G-Eval (5-point Likert -> 0..1). Requires the optional dependency.
+class LLMJudge:
+    """Score with any LLM via a ``complete(prompt) -> completion_text`` callable.
 
-    Not unit-tested here (needs an LLM + credentials); validated via integration when configured.
+    The model is asked to answer with ``SCORE: <int>`` (in the request's scale) and ``REASON: ...``;
+    the score is parsed and normalized to ``[0, 1]``. Provider-agnostic on purpose — wire Claude,
+    GPT, or a local model by supplying the callable (see docs/judges.md).
     """
 
-    def __init__(self, model: str, criteria: str, name: str = "geval") -> None:
-        try:
-            from deepeval.metrics import GEval  # noqa: F401
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise ImportError("DeepEvalJudge requires the '[deepeval]' extra") from exc
-        self.model = model
-        self.criteria = criteria
+    def __init__(self, complete: Callable[[str], str], name: str = "llm_judge") -> None:
+        self._complete = complete
         self.name = name
 
-    def evaluate(self, criteria: str, ctx: EvalContext) -> JudgeVerdict:  # pragma: no cover
-        from deepeval.metrics import GEval
-        from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+    def evaluate(self, request: JudgeRequest) -> JudgeVerdict:
+        text = self._complete(self.render_prompt(request))
+        score01, raw = self._parse(text, request.scale)
+        reason = ""
+        m = re.search(r"REASON:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
+        if m:
+            reason = m.group(1).strip()
+        return JudgeVerdict(score01, reason=reason, confidence=None)
 
-        metric = GEval(
-            name=self.name,
-            criteria=criteria or self.criteria,
-            model=self.model,
-            evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
-        )
-        tc = LLMTestCase(input=str(ctx.input), actual_output=str(ctx.output))
-        metric.measure(tc)
-        return JudgeVerdict(float(metric.score), confidence=None, reason=str(metric.reason or ""))
+    @staticmethod
+    def render_prompt(request: JudgeRequest) -> str:
+        lo, hi = request.scale
+        parts = [
+            "You are a strict, impartial evaluator.",
+            request.instruction,
+            f"\nReturn your verdict as two lines exactly:"
+            f"\nSCORE: <integer {lo}-{hi}>\nREASON: <one sentence>",
+        ]
+        if request.question:
+            parts.append(f"\n[USER QUESTION]\n{request.question}")
+        if request.context:
+            joined = "\n".join(f"- {c}" for c in request.context)
+            parts.append(f"\n[EVIDENCE]\n{joined}")
+        if request.reference:
+            parts.append(f"\n[REFERENCE ANSWER]\n{request.reference}")
+        parts.append(f"\n[RESPONSE TO EVALUATE]\n{request.response}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _parse(text: str, scale: tuple[int, int]) -> tuple[float, int]:
+        lo, hi = scale
+        m = re.search(r"SCORE:\s*([0-9]+(?:\.[0-9]+)?)", text, re.IGNORECASE)
+        if not m:
+            raise ValueError(f"judge response had no parseable SCORE: {text!r}")
+        raw = float(m.group(1))
+        raw = max(lo, min(hi, raw))
+        return (raw - lo) / (hi - lo) if hi > lo else 1.0, int(raw)
+
+
+def _tokens(s: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(s).lower()))
+
+
+def lexical_overlap_judge(request: JudgeRequest) -> JudgeVerdict:
+    """Deterministic offline stand-in: how well is the response covered by the evidence/reference?
+
+    Token-recall of the response against (context + reference). Not a real judge — it just lets the
+    examples run end-to-end without an LLM. Replace with :class:`LLMJudge` for meaningful scores.
+    """
+    resp = _tokens(request.response)
+    if not resp:
+        return JudgeVerdict(0.0, reason="empty response")
+    evidence = set().union(*[_tokens(c) for c in request.context]) if request.context else set()
+    evidence |= _tokens(request.reference)
+    if not evidence:
+        return JudgeVerdict(0.5, reason="no evidence to compare against")
+    covered = len(resp & evidence) / len(resp)
+    return JudgeVerdict(covered, reason=f"{covered:.0%} of response tokens supported by evidence")

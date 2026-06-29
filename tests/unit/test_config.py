@@ -1,86 +1,80 @@
-"""Tests for the YAML config schema + loader (the config-first surface)."""
+"""Config loading, dotted/file attribute import, judge resolution, and suite building."""
 
-from agent_eval.config.loader import (
-    build_dataset_spec,
-    build_suite,
-    load_config,
-    write_calibrated_tau,
-)
-from agent_eval.core.contracts import EvalContext, Level, MetricResult, Tier
-from agent_eval.core.metric import BaseMetric
+import pytest
+
+from agent_eval.config.loader import build_suite, import_attr, load_config, resolve_judge
+from agent_eval.config.schema import ConfigModel
+from agent_eval.core.errors import ConfigError
 from agent_eval.core.registry import default_registry
-from agent_eval.offline.runner import evaluate
 
-
-class _ExactMatch(BaseMetric):
-    """Local stand-in metric (the deterministic catalog was removed) for the loader tests."""
-
-    name = "exact_match"
-    tier = Tier.DETERMINISTIC
-    requires = frozenset({"output", "expected"})
-
-    def _compute(self, ctx: EvalContext) -> MetricResult:
-        ok = ctx.output == ctx.expected
-        return MetricResult(self.name, 1.0 if ok else 0.0, passed=ok)
-
-CONFIG = """
-version: 1
-agent_type: plain
-datasets:
-  toy:
-    adapter: jsonl
-    path: ${DATA_PATH}
-    field_map: {input: q, output: a, expected: e}
-suites:
-  response:
-    target: {level: graph, selector: "*"}
-    metrics:
-      - {type: exact_match, name: exact}
-    gate:
-      thresholds: {exact: 0.5}
-      require_pass: [exact]
-runtime_critic:
-  tiers: [deterministic]
-  tau: {exact: 1.0}
+_FACTORY_FILE = """
+from agent_eval.judges.backend import FunctionJudge
+single = FunctionJudge(lambda req: 0.42)
+panel = [FunctionJudge(lambda req: 0.4), FunctionJudge(lambda req: 0.6)]
 """
 
 
-def _write(tmp_path, text=CONFIG):
-    p = tmp_path / "cfg.yaml"
-    p.write_text(text)
+def _write_config(tmp_path, body: str):
+    p = tmp_path / "c.yaml"
+    p.write_text(body)
     return p
 
 
-def test_load_config_parses_structure(tmp_path):
-    cfg = load_config(_write(tmp_path))
-    assert cfg.agent_type == "plain"
-    assert "response" in cfg.suites
-    assert cfg.runtime_critic.tau["exact"] == 1.0
+def test_load_config_expands_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSPATH", "/data/x.jsonl")
+    body = "agent_type: rag\ndatasets:\n  d:\n    adapter: jsonl\n    path: ${DSPATH}\n"
+    cfg = load_config(_write_config(tmp_path, body))
+    assert cfg.datasets["d"].path == "/data/x.jsonl"
 
 
-def test_env_interpolation_in_paths(tmp_path, monkeypatch):
-    monkeypatch.setenv("DATA_PATH", "/data/toy.jsonl")
-    cfg = load_config(_write(tmp_path))
-    spec = build_dataset_spec(cfg, "toy")
-    assert spec.path == "/data/toy.jsonl"
-    assert spec.field_map["input"] == "q"
+def test_import_attr_module_form():
+    assert import_attr("math:sqrt")(4) == 2.0
 
 
-def test_build_suite_constructs_runnable_suite(tmp_path):
-    cfg = load_config(_write(tmp_path))
-    reg = default_registry()
-    reg.register("exact_match", lambda p: _ExactMatch())  # CONFIG gates on exact_match
-    suite = build_suite(cfg, "response", reg)
-    assert suite.metrics[0].name == "exact"
-    assert suite.gate.thresholds["exact"] == 0.5
-    assert suite.target.level is Level.GRAPH
-    res = evaluate(suite, [EvalContext(input="q", output="a", expected="a")])
-    assert res.verdict.passed is True
+def test_import_attr_file_form(tmp_path):
+    f = tmp_path / "fac.py"
+    f.write_text(_FACTORY_FILE)
+    judge = import_attr(f"{f}:single")
+    assert judge.evaluate.__self__ is judge  # it's a FunctionJudge instance
 
 
-def test_write_calibrated_tau_roundtrips(tmp_path):
-    p = _write(tmp_path)
-    write_calibrated_tau(p, {"exact": 0.9, "schema_linking": 1.0})
-    cfg = load_config(p)
-    assert cfg.runtime_critic.tau["exact"] == 0.9
-    assert cfg.runtime_critic.tau["schema_linking"] == 1.0
+def test_import_attr_bad_spec():
+    with pytest.raises(ConfigError):
+        import_attr("no-colon-no-dot")
+
+
+def test_resolve_judge_none_when_unset():
+    assert resolve_judge(ConfigModel(agent_type="plain")) == (None, ())
+
+
+def test_resolve_judge_single(tmp_path):
+    f = tmp_path / "fac.py"
+    f.write_text(_FACTORY_FILE)
+    cfg = ConfigModel(agent_type="rag", judge={"factory": f"{f}:single"})
+    backend, panel = resolve_judge(cfg)
+    assert backend is not None and panel == ()
+
+
+def test_resolve_judge_panel(tmp_path):
+    f = tmp_path / "fac.py"
+    f.write_text(_FACTORY_FILE)
+    cfg = ConfigModel(agent_type="rag", judge={"factory": f"{f}:panel"})
+    backend, panel = resolve_judge(cfg)
+    assert backend is not None and len(panel) == 1  # first is primary, rest is panel
+
+
+def test_build_suite_injects_judge_and_defaults(tmp_path):
+    f = tmp_path / "fac.py"
+    f.write_text(_FACTORY_FILE)
+    cfg = ConfigModel(
+        agent_type="rag",
+        judge={"factory": f"{f}:single"},
+        defaults={"k": 3},
+        suites={"s": {"metrics": ["recall_at_k", "faithfulness"],
+                      "gate": {"thresholds": {"recall_at_k": 0.5}}}},
+    )
+    suite = build_suite(cfg, "s", default_registry())
+    names = {m.name for m in suite.metrics}
+    assert names == {"recall_at_k", "faithfulness"}
+    recall = next(m for m in suite.metrics if m.name == "recall_at_k")
+    assert recall.k == 3  # default injected

@@ -1,28 +1,43 @@
 version: 1
 agent_type: rag
 
+defaults:
+  k: 3                                     # fixed retrieval depth for recall@k / precision@k / ndcg@k
+
+# judge:                                   # optional real judge; omit -> deterministic offline stub
+#   factory: examples/judges.py:claude_judge
+
 datasets:
-  qa:
+  gold:
     adapter: jsonl
-    path: examples/rag/rag.jsonl
-    # "retrieved" = ranked retrieved doc ids (the agent output); "relevant" = gold relevant ids.
-    field_map: {input: question, output: retrieved, expected: relevant}
+    path: examples/rag/gold.jsonl
+    # relevant -> metadata['relevant_ids'] (gold); reference -> the gold answer.
+    field_map: {input: question, expected: reference, relevant_ids: relevant}
+  predictions:
+    adapter: jsonl
+    path: examples/rag/predictions.jsonl
+
+prediction:
+  graph: examples/rag/agent.py:graph
+  source: gold
+  target: predictions
+  input_key: input
+  state_map:                              # canonical field <- agent state key
+    retrieved_ids: retrieved_ids          #   ranked ids -> metadata['retrieved_ids']
+    retrieved_context: retrieved_context  #   chunk texts (top-level field)
+    output: output                        #   final answer
+    tokens: tokens
 
 suites:
-  search:                                   # retrieval quality — caps downstream answer quality
-    dataset: qa
-    target: {level: node, selector: retrieve, attach: observe}
-    metrics:
-      - {type: recall_at_k, name: recall_at_k, params: {k: 5}}
-      - {type: precision_at_k, name: precision_at_k, params: {k: 5}}   # informational
+  retrieval:                              # search quality — caps everything downstream
+    dataset: predictions
+    metrics: [recall_at_k, precision_at_k, ndcg_at_k]
     gate:
-      thresholds: {recall_at_k: 0.7}        # Recall@k is the hard search gate
+      thresholds: {recall_at_k: 0.7}      # the hard retrieval gate
       require_pass: [recall_at_k]
-
-# Runtime critic: CRAG-style retrieval-sufficiency gate (re-retrieve if Recall@k too low)
-# + a semantic-entropy groundedness flag on the generated answer.
-runtime_critic:
-  tiers: [deterministic, uncertainty]
-  max_retries: 2
-  fallback: abstain
-  tau: {}
+  response:                               # answer groundedness + quality
+    dataset: predictions
+    metrics: [faithfulness, consistency, llm_judge]
+    gate:
+      thresholds: {faithfulness: 0.6}
+      require_pass: [faithfulness]

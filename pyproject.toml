@@ -1,7 +1,7 @@
 [project]
 name = "agent-eval"
-version = "0.0.1"
-description = "Reusable evaluation + runtime-critique framework for LangGraph agents"
+version = "0.1.0"
+description = "Offline evaluation framework for LangGraph agents"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,12 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-t2s = ["sqlglot>=25.0", "sqlalchemy>=2.0"]
-deepeval = ["deepeval>=1.0"]
-ragas = ["ragas>=0.2"]
-agentevals = ["agentevals", "langgraph>=0.2", "langchain-core>=0.3"]
-inspect = ["inspect-ai>=0.3"]
-obs = ["opentelemetry-sdk>=1.27", "openinference-instrumentation-langchain>=0.1"]
+# Run your agent to fill predictions (`agent-eval predict`) and the bundled examples:
+langgraph = ["langgraph>=0.2", "langchain-core>=0.3"]
+# Text-to-SQL metrics (soft_f1, component_match, ast_valid, t2s_*):
+t2s = ["sqlglot>=25.0"]
+# BERTScore metric (semantic similarity to a reference answer):
+bertscore = ["bert-score>=0.3"]
 
 [project.scripts]
 agent-eval = "agent_eval.cli.main:app"
@@ -35,8 +35,8 @@ build-backend = "hatchling.build"
 packages = ["src/agent_eval"]
 
 [dependency-groups]
-# The test suite needs the t2s (sqlglot) + agentevals (langgraph) extras:
-#   uv sync --extra t2s --extra agentevals
+# The test suite needs the t2s (sqlglot) + langgraph extras:
+#   uv sync --extra t2s --extra langgraph
 dev = ["pytest>=8.0", "hypothesis>=6.100", "ruff>=0.6", "mypy>=1.11"]
 
 [tool.pytest.ini_options]

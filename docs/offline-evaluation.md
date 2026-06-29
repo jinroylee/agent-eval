@@ -1,108 +1,80 @@
 # Offline evaluation (the CI/CD gate)
 
-The offline mode answers: *is this agent good enough to deploy?* — with statistics, not vibes.
+Offline mode answers: *is this agent good enough to deploy?* — with statistics, not vibes.
 
 ## The flow
 
-1. You have a **dataset** of labeled examples (gold answers / relevant ids / gold queries / …).
-2. Your agent produces **outputs** for each (you run it; or your dataset already has predictions).
-3. A **suite** of metrics scores each `(input, output, expected)` triple.
+1. You have a **gold dataset** of labeled examples (references / relevant ids / gold queries).
+2. **`agent-eval predict`** runs your agent over the inputs and writes a **predictions** dataset
+   (skip this if you already have predictions — see [langgraph-integration.md](langgraph-integration.md)).
+3. A **suite** of metrics scores each prediction.
 4. The runner **aggregates** per metric with small-sample-correct confidence intervals.
 5. A **gate** turns that into a pass/fail verdict; the CLI exits non-zero on failure.
 
-## Run it from the CLI
+## Run it
 
 ```bash
-uv run agent-eval evaluate --config examples/rag/rag.yaml
-# -c <yaml>            required
-# --category <name>    run one suite only (default: all suites in the file)
-# --dataset <name>     override which configured dataset to use
+uv run agent-eval evaluate --config eval.yaml
+# --category <name>   run one suite only (default: all)
+# --dataset <name>    override which configured dataset to score
 ```
 
-Exit codes: **0** = all gates passed, **1** = a gate failed, **2** = config/usage error. Drop it
-straight into CI as the deploy gate.
+```
+=== rag/retrieval  dataset=predictions  n=5 ===
+metric                     value                95% CI       thr  gate
+recall_at_k                0.900        [0.704, 1.000]      0.70  PASS
+precision_at_k             0.633        [0.417, 0.850]         -  info
+VERDICT: PASS
+```
 
-## Run it from Python
+## From Python
 
 ```python
 from agent_eval.core.contracts import EvalContext
 from agent_eval.core.gate import GatePolicy
 from agent_eval.core.suite import Suite
-from agent_eval.metrics.retrieval_ import RecallAtK
+from agent_eval.metrics.rag import RecallAtK
 from agent_eval.offline.runner import evaluate
 
 dataset = [
-    EvalContext(input="q1", output=["d1", "d2"], expected=["d1"]),          # recall 1.0
-    EvalContext(input="q2", output=["d3", "x"], expected=["d3", "d9"]),     # recall 0.5
-    EvalContext(input="q3", output=["x", "y"], expected=["d7"]),            # recall 0.0
+    EvalContext(input="q1", metadata={"retrieved_ids": ["d1", "d2"], "relevant_ids": ["d1"]}),
+    EvalContext(input="q2", metadata={"retrieved_ids": ["x"], "relevant_ids": ["d3"]}),
 ]
-suite = Suite(
-    agent_type="rag", category="search",
-    metrics=[RecallAtK(k=10)],
-    gate=GatePolicy(thresholds={"recall_at_k": 0.4}, require_pass=["recall_at_k"]),
-)
+suite = Suite("rag", "retrieval", [RecallAtK(k=10)],
+              GatePolicy(thresholds={"recall_at_k": 0.4}, require_pass=["recall_at_k"]))
 result = evaluate(suite, dataset)
 
-print(result.verdict.passed)              # True / False
+print(result.verdict.passed)
 for agg in result.aggregates:
     print(agg.metric, agg.value, (agg.ci_low, agg.ci_high), f"n={agg.n}", f"errors={agg.n_errors}")
 ```
 
-`evaluate(suite, dataset, alpha=0.05)` returns a `SuiteResult`:
-
-```python
-SuiteResult(agent_type, category, n_items, aggregates: list[MetricAggregate], verdict: GateVerdict)
-MetricAggregate(metric, value, ci_low, ci_high, n, n_errors, binary)
-GateVerdict(passed: bool, metric_passed: dict[str,bool], reasons: list[str])
-```
-
-Building the dataset from a config (so you reuse your `field_map`) is one call:
-
-```python
-from agent_eval.agents.rag.suites import rag_registry
-from agent_eval.config.loader import load_config, build_suite, build_dataset_spec
-from agent_eval.datasets.base import load_dataset
-
-cfg = load_config("my.yaml")
-suite = build_suite(cfg, "search", rag_registry())
-data = load_dataset(build_dataset_spec(cfg, cfg.suites["search"].dataset))
-result = evaluate(suite, data)
-```
+`evaluate(suite, dataset, alpha=0.05)` returns a `SuiteResult(agent_type, category, n_items,
+aggregates, verdict)` where each `MetricAggregate` carries `value`, `ci_low/ci_high`, `n`,
+`n_errors`, `aggregation`, and `higher_is_better`; `GateVerdict` carries `passed`, `metric_passed`,
+and `reasons`.
 
 ## How aggregation works (and why)
 
-- **Binary metrics** (those returning `passed=True/False`, e.g. `execution_accuracy`,
-  `trajectory_match`, `ast_valid`) are summarized as a **pass rate** with a **Wilson** confidence
-  interval — which, unlike the normal-approximation CLT, does not under-cover at small *n*.
-- **Graded metrics** (those returning a float `score` with `passed=None`, e.g. `recall_at_k`,
-  `soft_f1`, `semantic_entropy`, a judge score) are summarized as a **mean** with a
-  **cluster-robust** CI. If your items aren't independent — RAG questions sharing a passage,
-  multi-turn scenarios — set `metadata["cluster_id"]` so the SE isn't artificially tight.
-- **Errors** (a metric that couldn't run — missing field, exception, bad gold) are counted in
-  `n_errors` and excluded from `n`. They show up in the gate reasons.
+Each metric declares an `aggregation`; the runner uses small-sample-correct statistics for each:
 
-See [statistics.md](statistics.md) for the full toolbox.
+- **`RATE`** (binary metrics like `ast_valid`) → pass rate with a **Wilson** interval, which doesn't
+  under-cover at small *n* the way the normal-approximation/CLT interval does.
+- **`MEAN`** (graded metrics like `recall_at_k`, `soft_f1`, `faithfulness`, a judge score) → mean
+  with a **cluster-robust** SE. If your items aren't independent — RAG questions sharing a passage,
+  multi-turn scenarios — set `metadata["cluster_id"]` so the error bar isn't artificially tight.
+- **`P95`** (`p95_latency`) → 95th percentile with a **bootstrap** interval (latency is heavy-tailed,
+  so a normal approximation would be wrong).
 
-## Regression gates (champion vs. challenger)
+**Errors** (a metric that couldn't run — missing field, exception, bad gold) are counted in
+`n_errors` and excluded from `n`; they surface in the gate reasons. A genuine bad result just scores
+low — the two are never conflated.
 
-Don't gate only on a point threshold — block a merge only when a drop is **statistically
-significant** *and* exceeds a minimum effect size. The framework gives you paired tests on a frozen
-baseline slice:
+## The gate
 
-```python
-from agent_eval.offline.regression import mcnemar_regression, bootstrap_regression
-
-# binary correctness (e.g. per-item execution-accuracy pass/fail), paired by item:
-r = mcnemar_regression(baseline_pass, candidate_pass, metric="execution_accuracy", min_effect=0.02)
-r.significant_drop      # True only if candidate < baseline, significant, and |delta| >= min_effect
-r.delta, r.pvalue, r.n_discordant
-
-# continuous scores (e.g. G-Eval), paired by item:
-bootstrap_regression(baseline_scores, candidate_scores, metric="geval", min_effect=0.03)
-```
-
-This is the principle behind `GatePolicy.min_effect` / `significance_alpha` / `fdr` — wire these
-into your own gate runner when you compare two releases on the same frozen dataset.
+Every metric with a configured threshold must meet it, **in its own direction**: `recall_at_k: 0.7`
+means ≥ 0.7, `p95_latency: 2000` means ≤ 2000. `require_pass` metrics are hard blockers that must
+have run and passed. Metrics without a threshold are informational.
 
 ## Reporting (JSON / JUnit / text)
 
@@ -113,39 +85,15 @@ report.to_junit([result])  # JUnit XML for CI dashboards; failing thresholds bec
 report.to_text(result)     # the human table the CLI prints
 ```
 
-A failed threshold becomes a JUnit `<failure>`, so CI surfaces exactly which metric blocked the
-release and why.
-
-## Calibrating the runtime critic from the offline run
-
-The offline run can produce the runtime critic's thresholds, bounding the false-fail rate on a
-known-good calibration set, and write them into the same config:
-
-```bash
-uv run agent-eval calibrate -c examples/t2s/t2s.yaml --category search --max-false-fail 0.05
-# -> writes runtime_critic.tau into the config
-```
-
-In Python:
-
-```python
-from agent_eval.offline.calibrate import calibrate_and_write, calibrate_tau, collect_scores
-tau = calibrate_and_write("my.yaml", "search", max_false_fail=0.05)   # {metric: threshold}
-```
-
-`tau[metric]` is the `max_false_fail` empirical quantile of that metric's scores on the calibration
-set. For a metric that's perfect on good data (e.g. execution accuracy), `tau` is `1.0` (must pass).
-This is the only place the runtime thresholds come from — see
-[runtime-critic.md](runtime-critic.md).
-
-## CI integration sketch
+## CI integration
 
 ```yaml
 # .github/workflows/eval.yml (sketch)
-- run: uv sync --extra t2s
-- run: uv run agent-eval evaluate -c eval/t2s.yaml   # non-zero exit fails the job
+- run: uv sync --extra langgraph --extra t2s
+- run: uv run agent-eval predict  -c eval/rag.yaml
+- run: uv run agent-eval evaluate -c eval/rag.yaml   # non-zero exit fails the job
 ```
 
-Keep a **frozen** golden slice in version control for apples-to-apples regression comparisons; add a
-rolling supplement from production failures for realism (version every dataset and link it to the
-agent release).
+Keep a **frozen** golden slice in version control for apples-to-apples comparisons across releases;
+add a rolling supplement from production failures for realism. Version every dataset and link it to
+the agent release it gated.

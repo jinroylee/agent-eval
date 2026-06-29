@@ -2,52 +2,44 @@
 
 Read this first — every other doc builds on these ideas.
 
-## The one big idea: one metric core, two entrypoints
+## The one big idea: one metric core, two CLI steps
 
 ```
-                 config (YAML, per agent type)  ──▶  METRIC CORE
-                                                      Metric protocol · Registry · Suite
-   EvalContext(input, output, expected,              tier: DETERMINISTIC < UNCERTAINTY < JUDGE
-     retrieved_context, trajectory, metadata)        → MetricResult(score 0..1, confidence, cost, detail)
-                          │                                  │
-          ┌───────────────┴───────────────┐   same metric    │   plugins behind ONE interface
-          ▼                               ▼   objects         ▼
-   OFFLINE RUNNER                   RUNTIME CRITIC
-   dataset → stats → GATE verdict   node/tool wrapper → ACCEPT/RETRY/FALLBACK/ESCALATE/ABSTAIN
-          │                               ▲
-          └── calibrate writes τ ──────────┘   the SAME thresholds drive both modes
+          config (YAML)                      METRIC CORE
+                │                 Metric protocol · Registry · Suite · Gate
+   EvalContext(input, output,          each Metric: EvalContext → MetricResult(score 0..1, …)
+     expected, retrieved_context,                   │
+     metadata)                                      │
+        │                                           ▼
+        ├── agent-eval predict ──► fills predictions by running your LangGraph agent
+        └── agent-eval evaluate ─► scores predictions → aggregate w/ CIs → GATE verdict (CI exit code)
 ```
 
-A **metric** is a small object that scores one **unit of work** (`EvalContext`) and returns a
-normalized `MetricResult`. The *same* metric objects are used by:
-
-- the **offline runner** — aggregates results over a dataset with proper statistics into a pass/fail
-  gate verdict, and
-- the **runtime critic** — runs the metric on a single in-flight step and turns the score into a
-  decision.
-
-Because both modes share metrics *and* thresholds (the offline `calibrate` step writes the runtime
-critic's thresholds), your CI gate and your in-flight critic can't silently disagree.
+A **metric** scores one **unit of work** (an `EvalContext`) and returns a normalized
+`MetricResult`. The offline **runner** aggregates those results over a dataset with proper
+statistics and applies a **gate** → a pass/fail verdict. That's the whole framework.
 
 ## The core data types
 
-These five types are the whole vocabulary. (`from agent_eval.core.contracts import ...`)
+`from agent_eval.core.contracts import ...` — four small, frozen types.
 
-### `EvalContext` — one unit of work to score, at any graph level
+### `EvalContext` — one item to score
 
 ```python
 @dataclass(frozen=True)
 class EvalContext:
-    input: Any                      # the question / step input / tool args
-    output: Any                     # what's under test: an answer, SQL, retrieved ids, a tool result
-    expected: Any = None            # gold / reference (offline)
-    retrieved_context: Sequence[str] = ()   # RAG passages
-    trajectory: Sequence[Mapping] = ()       # orchestration: list of {"tool","args"} steps
-    metadata: Mapping = {}          # db_ref, schema, samples, cluster_id, level, selector, …
+    input: Any                      # the user message / question
+    output: Any = None              # the final response to the user  ← common metrics score this
+    expected: Any = None            # gold final response (GT metrics only)
+    retrieved_context: Sequence[str] = ()   # RAG: retrieved chunk texts
+    metadata: Mapping = {}          # agent-specific fields: retrieved_ids, sql, db_ref, latency_ms, …
 ```
 
-The same object describes a whole-graph run, a single node's I/O, or one tool call — only which
-fields are populated differs. Optional fields cover all four agent types.
+The **invariant** that keeps metrics uniform across agent types: `output` is *always the final
+response shown to the user*, so the common metrics (judge, BERTScore) score it for every agent type.
+Agent-specific artifacts live in `metadata` under documented keys (`MetaKey.*`) — a RAG agent's
+ranked ids in `metadata['retrieved_ids']`, a T2S agent's SQL in `metadata['sql']`. See
+[metrics.md](metrics.md) for exactly which fields each metric reads.
 
 ### `MetricResult` — a normalized score
 
@@ -55,113 +47,96 @@ fields are populated differs. Optional fields cover all four agent types.
 @dataclass(frozen=True)
 class MetricResult:
     metric: str
-    score: float                    # normalized 0..1 (bool → 0/1, graded e.g. soft_f1)
+    score: float                    # normalized 0..1 (raw magnitude for latency/tokens)
     passed: bool | None = None      # set for binary metrics; None for graded
-    confidence: float | None = None # for UNCERTAINTY/JUDGE tiers (drives runtime escalation)
+    confidence: float | None = None # judge/panel agreement
     cost: Cost = Cost()             # tokens / usd / latency_ms (auto-captures latency)
-    detail: Mapping = {}            # sub-scores, errors, repair hints
-    error: str | None = None        # set ⇒ the metric could NOT RUN (≠ scored a failure)
+    detail: Mapping = {}            # sub-scores, reasons, parse errors
+    error: str | None = None        # set ⇒ the metric could NOT RUN (≠ a low score)
 ```
 
-`error` vs a low `score` is an important distinction: a missing required field or an exception sets
-`error` (the item is excluded from the denominator and counted separately); a genuine bad result
-just scores low. Metrics never crash a run — exceptions are trapped into `error`.
+`error` vs a low `score` matters: a missing required field or an exception sets `error` (the item is
+excluded from the denominator and counted separately); a genuine bad result just scores low. Metrics
+never crash a run — exceptions are trapped into `error`.
 
 ### `Metric` — the one contract everything implements
 
 ```python
 class Metric(Protocol):
     name: str
-    tier: Tier                      # DETERMINISTIC | UNCERTAINTY | JUDGE
-    modes: frozenset[Mode]          # {OFFLINE, RUNTIME}
     requires: frozenset[str]        # EvalContext fields it needs (validated before running)
-    cost_class: CostClass           # FREE | CHEAP | EXPENSIVE  (runtime tiering)
+    cost_class: CostClass           # FREE | CHEAP | EXPENSIVE  (EXPENSIVE ⇒ calls an LLM)
+    aggregation: Aggregation        # RATE | MEAN | P95  (how per-item scores roll up)
+    higher_is_better: bool          # gate direction (False for latency/tokens)
+    unit_interval: bool             # are scores bounded to [0, 1]?
     def score(self, ctx) -> MetricResult: ...
-    async def ascore(self, ctx) -> MetricResult: ...
 ```
 
-You almost never implement this by hand — you subclass `BaseMetric` and write one method
-(`_compute`). See [customizing.md](customizing.md). OSS libraries (DeepEval, RAGAS, agentevals) are
-wrapped as metrics behind this same interface.
+You almost never implement this by hand — subclass `BaseMetric` and write `_compute`. See
+[customizing.md](customizing.md).
 
 ### `Suite` and `GatePolicy` — what to run, and how to gate
 
 ```python
 @dataclass
 class Suite:
-    agent_type: str
-    category: str                   # search | response | latency | scenario
+    agent_type: str                 # plain | rag | t2s (informational)
+    category: str                   # e.g. retrieval | response | correctness
     metrics: Sequence[Metric]
     gate: GatePolicy
-    target: EvalTarget | None       # which graph level (graph/subgraph/node/tool)
 
 @dataclass
 class GatePolicy:
-    thresholds: Mapping[str, float] # metric_name → min score to pass
+    thresholds: Mapping[str, float] # metric_name → threshold (direction per metric.higher_is_better)
     require_pass: Sequence[str]     # hard ship-blockers (must run AND pass)
-    min_effect: float = 0.0         # practical-significance floor for regressions
-    significance_alpha: float = 0.05
-    fdr: bool = True
 ```
 
-### `EvalTarget` — the graph level
+## GT vs non-GT (the key metric axis)
 
-```python
-@dataclass(frozen=True)
-class EvalTarget:
-    level: Level                    # GRAPH | SUBGRAPH | NODE | TOOL
-    selector: str = "*"             # node/tool/subgraph name; "*" == whole graph
-    attach: str = "observe"         # "observe" (non-intrusive) | "active" (inject a critic)
-```
+Each metric is either **ground-truth** (needs a reference/label) or **reference-free**:
 
-## The three tiers
+- **GT** — `bertscore`, `recall_at_k`, `precision_at_k`, `ndcg_at_k`, `soft_f1`, `component_match`.
+  These read `expected` or a gold field in `metadata` (`relevant_ids`, `gold_sql`).
+- **non-GT** — `faithfulness`, `consistency`, `t2s_faithfulness`, `t2s_consistency`, `ast_valid`,
+  `p95_latency`, `token_usage`. No label required — they judge the output against retrieved evidence,
+  the executed query result, or measure cost/latency.
+- `llm_judge` works **either way**: with a reference (`expected` set) it grades against it, without
+  one it grades intrinsic quality.
 
-Every metric declares a `tier`, which is also the runtime critic's **cheap-to-strong escalation
-order**:
+The design rule: **gate objective tasks on grounded checks, not on a judge** — T2S correctness is
+gated on query *execution* (`soft_f1`), and judges are confined to subjective quality and
+groundedness. Never let the model that produced an answer grade its own correctness.
 
-1. **DETERMINISTIC** — grounded, reproducible, usually free: SQL execution & AST checks (execution
-   accuracy, schema linking), retrieval Recall@k/Precision@k, tool-arg & trajectory validity.
-   *Preferred for objective correctness.*
-2. **UNCERTAINTY** — label-free confidence with no oracle: SelfCheckGPT consistency, semantic
-   entropy. Cheap-ish.
-3. **JUDGE** — an LLM-as-judge for subjective quality where no oracle exists. Expensive; certified &
-   pinned before it may gate a release.
+## How scores aggregate
 
-The design rule (from the research): **gate objective tasks on deterministic checks, not judges**,
-and never let the model that produced an answer grade its own correctness.
+Every metric declares an `aggregation`, and the runner rolls up its per-item scores accordingly:
 
-## The two modes in one sentence each
+| Aggregation | Used by | Statistic | Interval |
+|---|---|---|---|
+| `RATE` | binary metrics (`ast_valid`) | pass rate | **Wilson** (doesn't under-cover at small n) |
+| `MEAN` | graded metrics (`recall_at_k`, `soft_f1`, `faithfulness`, judge) | mean | **cluster-robust** SE |
+| `P95` | `p95_latency` | 95th percentile | **bootstrap** (latency is heavy-tailed) |
 
-- **Offline:** `evaluate(suite, dataset)` runs each metric on every `EvalContext`, aggregates per
-  metric with small-sample-correct statistics (Wilson intervals; clustered SEs), and applies the
-  `GatePolicy` → a `SuiteResult` with a pass/fail `GateVerdict`. See
-  [offline-evaluation.md](offline-evaluation.md).
-- **Runtime:** a `Critic` runs the tiers cheapest-first on one step and returns a `Decision`;
-  `critic_loop` orchestrates bounded retry-with-injected-critique → fallback. See
-  [runtime-critic.md](runtime-critic.md).
-
-## The calibration link
-
-The offline runner can compute, per metric, the **operating point** (`tau`) that bounds the
-false-fail rate on a known-good calibration set, and write it into the *same* config the runtime
-critic reads (`agent-eval calibrate`). That's the mechanism that keeps offline and runtime
-consistent — there's no separate place to get the thresholds wrong.
+For non-iid items (RAG questions sharing a passage), set `metadata['cluster_id']` so the
+cluster-robust interval doesn't report an artificially tight error bar. See
+[offline-evaluation.md](offline-evaluation.md).
 
 ## How the pieces map to packages
 
 ```
-core/            contracts · metric (BaseMetric) · registry · suite · gate · errors
-metrics/         deterministic_ · ast_query_(T2S) · retrieval_ · uncertainty_ · trajectory_ · perf_ · judge_
-                 + lazy adapters: deepeval (via judges), ragas_ , agentevals_
-judges/          config · backend · panel(PoLL) · certify · registry · governance
-stats/           intervals · clustered · tests · ppi · sequential · agents · agreement
-offline/         runner(evaluate) · gate · regression · calibrate · report
-runtime/         critic · policy · loop_guard · fallback
-execution/       harness · sandbox · compare(result-set policy)        # T2S
-instrumentation/ topology · observe · active_node · context_builder    # LangGraph
-obs/             boundary · adapters(OTel/LangSmith/Phoenix/Langfuse) · drift
-datasets/        base(DatasetAdapter) · jsonl · tabular
-config/          schema(pydantic) · loader
-agents/          plain · t2s · rag · orchestration            # per-type registries + critics + (t2s) sample
-cli/             main(evaluate · calibrate · version)
+core/         contracts · metric (BaseMetric) · registry (+ BuildContext) · suite · gate · errors
+metrics/      common · rag · t2s          # the three metric families
+judges/       backend (LLMJudge, FunctionJudge) · panel (PoLL)
+execution/    harness · sandbox · compare(result-set policy)   # T2S
+stats/        intervals (Wilson, bootstrap) · clustered (cluster-robust SE)
+datasets/     base (field_map → canonical) · jsonl · tabular
+harness/      predict — run a LangGraph agent to fill predictions
+config/       schema (pydantic) · loader
+offline/      runner (evaluate) · report (JSON/JUnit/text)
+cli/          main (predict · evaluate · version)
+runtime/      critic · loop_guard · fallback   # foundation for a future in-flight critique mode
 ```
+
+The same `Metric` objects that power the offline gate can also drive an **in-flight critic** that
+scores a single step and decides accept/retry/fallback — a foundation for a future runtime mode, kept
+separate from the offline path. See [runtime-critic.md](runtime-critic.md).

@@ -3,34 +3,42 @@ agent_type: t2s
 
 defaults:
   dialect: sqlite
-  # Explicit result-set comparison semantics (the documented silent-failure source for EX).
+  # Result-set comparison semantics (the documented silent-failure source for execution metrics).
   result_set_policy: {row_order: ignore, duplicates: keep, nulls: distinct, float_tolerance: 1.0e-6}
+
+# judge:                                   # optional real judge; omit -> deterministic offline stub
+#   factory: examples/judges.py:claude_judge
 
 datasets:
   gold:
     adapter: tabular
     path: examples/t2s/gold.csv
     format: csv
-    # "pred" is the agent output under test; "db" -> metadata.db_ref for execution grounding.
-    field_map: {input: question, output: pred, expected: gold, db_ref: db}
+    # gold_sql -> metadata['gold_sql']; db -> metadata['db_ref'] (executed against).
+    field_map: {input: question, gold_sql: gold_sql, db_ref: db}
+  predictions:
+    adapter: jsonl
+    path: examples/t2s/predictions.jsonl
+
+prediction:
+  graph: examples/t2s/agent.py:graph
+  source: gold
+  target: predictions
+  input_key: input
+  state_map:                              # canonical field <- agent state key
+    sql: sql                              #   generated SQL -> metadata['sql']
+    output: output                        #   final NL answer
+    tokens: tokens
 
 suites:
-  search:                                   # = query correctness, gated on execution, not a judge
-    dataset: gold
-    target: {level: tool, selector: run_query, attach: observe}
-    metrics:
-      - {type: execution_accuracy, name: execution_accuracy}
-      - {type: soft_f1, name: soft_f1}
-      - {type: component_match, name: component_match}
+  correctness:                            # objective: gated on execution + AST, never on a judge
+    dataset: predictions
+    metrics: [soft_f1, component_match, ast_valid]
     gate:
-      thresholds: {execution_accuracy: 0.80}
-      require_pass: [execution_accuracy]
-      min_effect: 0.02
-
-# Deterministic runtime critic (AST validity + schema linking + dry-run execution).
-# `tau` is written here by `agent-eval calibrate` from an offline run.
-runtime_critic:
-  tiers: [deterministic]
-  max_retries: 2
-  fallback: abstain
-  tau: {}
+      thresholds: {soft_f1: 0.8, ast_valid: 0.95}
+      require_pass: [soft_f1, ast_valid]
+  response:                               # does the NL answer reflect what the query returned?
+    dataset: predictions
+    # Informational with the offline stub judge; wire a real judge (above) then add thresholds, e.g.
+    #   gate: {thresholds: {t2s_faithfulness: 0.8}, require_pass: [t2s_faithfulness]}
+    metrics: [t2s_faithfulness, t2s_consistency, llm_judge]

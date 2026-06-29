@@ -1,4 +1,9 @@
-"""Pydantic schema for the agent-eval YAML config (the declarative, config-first surface)."""
+"""Pydantic schema for the agent-eval YAML config (the declarative, config-first surface).
+
+One file describes: how to turn a LangGraph agent's runs into a predictions dataset
+(``prediction``), where the data lives (``datasets``), which LLM judge to use (``judge``), and what
+to score + gate (``suites``).
+"""
 
 from __future__ import annotations
 
@@ -7,62 +12,53 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class TargetModel(BaseModel):
-    level: str = "graph"
-    selector: str = "*"
-    attach: str = "observe"
-
-
 class GateModel(BaseModel):
-    thresholds: dict[str, float] = Field(default_factory=dict)
-    require_pass: list[str] = Field(default_factory=list)
-    min_effect: float = 0.0
-    significance_alpha: float = 0.05
-    fdr: bool = True
+    thresholds: dict[str, float] = Field(default_factory=dict)  # metric name -> threshold
+    require_pass: list[str] = Field(default_factory=list)  # hard ship-blockers
 
 
 class SuiteModel(BaseModel):
-    target: TargetModel = Field(default_factory=TargetModel)
     metrics: list[Any] = Field(default_factory=list)  # bare type-string or {type,name,params}
     gate: GateModel = Field(default_factory=GateModel)
-    dataset: str | None = None  # which configured dataset this suite evaluates
-    judge: dict[str, Any] | None = None
+    dataset: str | None = None  # which configured dataset this suite scores
 
 
 class DatasetModel(BaseModel):
-    adapter: str
+    adapter: str  # jsonl | tabular
     path: str
     format: str | None = None
-    field_map: dict[str, str] = Field(default_factory=dict)
+    field_map: dict[str, str] = Field(default_factory=dict)  # target field -> source column
     include_unmapped: bool = True
-    frozen_slice: str | None = None
+
+
+class PredictionModel(BaseModel):
+    """How ``agent-eval predict`` fills a dataset by running a LangGraph agent.
+
+    ``graph`` is ``"module:attr"`` resolving to a compiled LangGraph (or a zero-arg factory that
+    returns one). For each record in the ``source`` dataset, the graph is invoked with
+    ``{input_key: <the input field>}``; ``state_map`` (target field -> final-state key) projects the
+    resulting state onto canonical fields. The merged records are written to the ``target`` dataset.
+    """
+
+    graph: str
+    source: str  # dataset name holding the gold inputs + references
+    target: str  # dataset name to write predictions into (its `path` is the output file)
+    input_key: str = "input"  # key under which the question is passed into the graph state
+    state_map: dict[str, str] = Field(default_factory=dict)  # target field -> graph state key
 
 
 class JudgeModel(BaseModel):
-    model: str
-    prompt_version: str = "v1"
-    rubric_id: str = ""
-    protocol: str = "pointwise"
-    panel: list[str] = Field(default_factory=list)
-    confidence_policy: str = "logprob"
-    certification_ref: str | None = None
+    """Resolve an LLM judge backend. ``factory`` is ``"module:attr"`` returning a JudgeBackend (or a
+    list of them = a PoLL panel). Omit this section to use the deterministic offline stub."""
 
-
-class RuntimeCriticModel(BaseModel):
-    tiers: list[str] = Field(default_factory=lambda: ["deterministic", "uncertainty", "judge"])
-    max_retries: int = 2
-    latency_budget_ms: float = 1500.0
-    fallback: str = "abstain"
-    tau: dict[str, float] = Field(default_factory=dict)
-    self_refine_only_for: list[str] = Field(default_factory=lambda: ["style", "format", "safety"])
+    factory: str | None = None
 
 
 class ConfigModel(BaseModel):
     version: int = 1
-    agent_type: str
-    defaults: dict[str, Any] = Field(default_factory=dict)
+    agent_type: str = "plain"  # plain | rag | t2s (informational)
+    defaults: dict[str, Any] = Field(default_factory=dict)  # dialect, k, result_set_policy, ...
     datasets: dict[str, DatasetModel] = Field(default_factory=dict)
-    judges: dict[str, JudgeModel] = Field(default_factory=dict)
+    judge: JudgeModel | None = None
+    prediction: PredictionModel | None = None
     suites: dict[str, SuiteModel] = Field(default_factory=dict)
-    runtime_critic: RuntimeCriticModel | None = None
-    eval_targets: list[TargetModel] = Field(default_factory=list)

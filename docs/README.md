@@ -1,82 +1,46 @@
 # agent-eval — documentation
 
-A reusable **evaluation + runtime-critique** framework for **LangGraph** agents.
+An offline **evaluation framework for LangGraph agents**: run your agent over a labeled dataset,
+score it with a focused metric set, and **gate your CI** on statistically-defensible thresholds.
 
-It does two jobs over one shared metric core:
+```
+ gold dataset ──► agent-eval predict ──► predictions ──► agent-eval evaluate ──► gated verdict
+```
 
-- **Offline (CI/CD gate).** Holistically score an agent before deploy and **block the release** if it
-  fails statistically-defensible thresholds. `agent-eval evaluate` exits non-zero and emits JUnit.
-- **Runtime (in-flight critic).** Inside a node or tool-call, decide **accept / retry / fallback /
-  escalate / abstain** when a step misses requirements.
+Three agent types, one metric core:
 
-It covers four agent types — **Plain, RAG, T2S (text-to-SQL/Cypher), Orchestration** — across four
-categories — **search, response, latency, scenario** — and can evaluate a LangGraph at any level:
-**whole-graph → subgraph → node → tool-call**. Everything is **config-first (YAML)** with a **Python
-plugin escape hatch**, and bring-your-own dataset (CSV/Excel/Parquet/JSONL).
-
-> The method/library choices are grounded in a verified SOTA research report:
-> [`research/2026-06-05-agent-eval-sota-research.md`](research/2026-06-05-agent-eval-sota-research.md).
-
----
+- **Common** — `llm_judge`, `bertscore`, `p95_latency`, `token_usage`
+- **RAG** — `recall_at_k`, `precision_at_k`, `ndcg_at_k`, `faithfulness`, `consistency`
+- **T2S** — `soft_f1`, `component_match`, `ast_valid`, `t2s_faithfulness`, `t2s_consistency`
 
 ## Install
 
-Requires **Python 3.12**. The project uses [`uv`](https://docs.astral.sh/uv/).
+```bash
+uv sync --extra langgraph --extra t2s      # run agents + text-to-SQL metrics
+```
+
+## Quickstart
 
 ```bash
-# core only (pure metrics + offline gate + stats + CLI)
-uv sync
-
-# add the optional extras you need:
-uv sync --extra t2s         # text-to-SQL/Cypher: sqlglot, sqlalchemy
-uv sync --extra agentevals  # LangGraph instrumentation + agentevals: langgraph, langchain-core
-uv sync --extra t2s --extra agentevals   # both (what the test suite uses)
-```
-
-Other extras: `deepeval` (G-Eval judge), `ragas` (RAG LLM metrics), `inspect` (sandboxed scenario
-suites), `obs` (OpenTelemetry export). These power **lazy adapters** — install only when you wire a
-real LLM/backend.
-
-## 60-second quickstart
-
-```bash
-# Score a tiny RAG retriever (Recall@k) and gate on a threshold:
-uv run agent-eval evaluate --config examples/rag/rag.yaml
-```
-```
-=== rag/search  dataset=qa  n=5 ===
-metric                     value              95% CI    thr  gate
-recall_at_k                0.900      [0.704, 1.000]   0.70  PASS
-precision_at_k             0.633      [0.417, 0.850]      -  info
-VERDICT: PASS
-```
-
-Run the other built-in examples the same way:
-
-```bash
-uv run agent-eval evaluate -c examples/t2s/t2s.yaml            # text-to-SQL (Execution Accuracy)
-uv run agent-eval evaluate -c examples/orchestration/orchestration.yaml   # tool-trajectory gate
-```
-
-Calibrate the runtime critic's thresholds from an offline run (writes them back into the config):
-
-```bash
-uv run agent-eval calibrate -c examples/t2s/t2s.yaml --category search
+uv run agent-eval predict  -c examples/rag/rag.yaml
+uv run agent-eval evaluate -c examples/rag/rag.yaml
 ```
 
 ## Where to go next
 
 | Doc | What it covers |
 |---|---|
-| [concepts.md](concepts.md) | The mental model: the metric core, two modes, three tiers, multi-level, the calibration link, and the core data types. **Read this first.** |
-| [repository-structure.md](repository-structure.md) | The physical layout — every package/module in `src/agent_eval/`, plus `tests/`/`examples/`/`docs/`, and a "where does X live?" map. |
-| [configuration.md](configuration.md) | The complete YAML reference — every section and field. |
-| [offline-evaluation.md](offline-evaluation.md) | Datasets, running the gate, reading verdicts, the statistics, regression vs a baseline, calibration, and CI integration. |
-| [runtime-critic.md](runtime-critic.md) | The in-flight critic: policy, tiers, the retry→fallback loop, loop guards, and the built-in per-agent-type critics. |
-| [langgraph-integration.md](langgraph-integration.md) | **The full worked example** — evaluate *and* critique a real LangGraph agent (observational + active, at the level you choose). |
-| [agent-types.md](agent-types.md) | The four built-in agent types and their metrics + example configs. |
-| [judges.md](judges.md) | LLM-as-judge governance: certify, pin, panel-of-judges, PPI, the `UncertifiedJudge` gate, and wiring a real G-Eval judge. |
-| [statistics.md](statistics.md) | The statistics toolkit and *why* (Wilson vs CLT, clustered SEs, pass^k, Cost-of-Pass, PPI, anytime-valid drift). |
-| [customizing.md](customizing.md) | **Extending the framework**: add a metric, a dataset adapter, a fallback, a judge backend, or a whole new agent type — via config, in-code, or as a plugin. |
+| [concepts.md](concepts.md) | The mental model: metric core, `EvalContext`, GT vs non-GT, aggregation, the gate. **Read first.** |
+| [metrics.md](metrics.md) | The metric catalog (Common / RAG / T2S) and the **graph-state fields each metric requires**. |
+| [langgraph-integration.md](langgraph-integration.md) | Evaluate your own LangGraph agent: the state contract, `state_map`, `agent-eval predict`. |
+| [offline-evaluation.md](offline-evaluation.md) | Datasets, running the gate, the statistics, reporting, CI. |
+| [configuration.md](configuration.md) | The complete YAML reference. |
+| [judges.md](judges.md) | LLM-as-a-judge: the rubrics, PoLL, and wiring a real Claude judge. |
+| [customizing.md](customizing.md) | Add a metric, a dataset adapter, a judge backend, or a plugin. |
+| [repository-structure.md](repository-structure.md) | The physical layout and a "where does X live?" map. |
+| [runtime-critic.md](runtime-critic.md) | **Foundation** for a future in-flight critique mode that reuses the same metrics (not part of the offline gate). |
+| [final_metric_list.md](final_metric_list.md) | The agreed target metric set this framework implements. |
 
-The implementation plan / phasing lives in [`plan.md`](plan.md).
+The bundled [`examples/`](../examples/) are the fastest way in — one runnable example per agent type.
+`research/` holds the original SOTA research report that informed the method choices (a point-in-time
+record; the live metric set is whatever [metrics.md](metrics.md) lists).
