@@ -21,7 +21,7 @@ from agent_eval.datasets.base import DatasetSpec
 
 def load_config(path: str | Path) -> ConfigModel:
     """Read YAML (with ``${ENV}`` interpolation) and validate it against the schema."""
-    text = Path(path).read_text()
+    text = Path(path).read_text(encoding="utf-8")
     text = os.path.expandvars(text)  # ${VAR} / $VAR from the environment
     data = yaml.safe_load(text) or {}
     return ConfigModel(**data)

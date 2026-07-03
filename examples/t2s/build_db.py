@@ -1,23 +1,24 @@
-"""Build the T2S example's fixtures: a small SQLite database + a gold (question, SQL) CSV.
+"""Build the T2S example's fixtures: a SQLite database + a gold dataset with pre-computed results.
 
 Run once before evaluating:  ``python examples/t2s/build_db.py``
 
 The schema (employees + departments) exercises joins, GROUP BY/HAVING, NULLs, float aggregates, and
-LIMIT, so the result-set comparison policy is genuinely tested.
+LIMIT, so the result-set comparison policy is genuinely tested. This script also **executes each gold
+query once** and stores its result set in ``gold.jsonl`` (as ``gold_execution_result``). Evaluation
+compares against those stored rows, so ``agent-eval evaluate`` never touches the database itself — the
+only things that run SQL are this build step and the agent at predict time.
 """
 
 from __future__ import annotations
 
-import csv
+import json
 import os
 import sqlite3
 from pathlib import Path
 
 HERE = Path(__file__).parent
 DB_PATH = HERE / "sample.sqlite"
-GOLD_PATH = HERE / "gold.csv"
-# Path written into gold.csv as db_ref; metrics open it relative to the repo root (where you run CLI).
-DB_REF = "examples/t2s/sample.sqlite"
+GOLD_PATH = HERE / "gold.jsonl"
 
 SCHEMA_DDL = """
 CREATE TABLE department (dept_id INTEGER PRIMARY KEY, name TEXT, budget REAL);
@@ -82,16 +83,29 @@ def build_db(path: str | os.PathLike = DB_PATH) -> str:
     return str(path)
 
 
-def write_gold_csv(path: str | os.PathLike = GOLD_PATH) -> str:
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["id", "question", "gold_sql", "db"])
-        writer.writeheader()
-        for row in GOLD:
-            writer.writerow({**row, "db": DB_REF})
+def _execute(con: sqlite3.Connection, sql: str) -> list[list]:
+    """Run a query and return its rows as a list of lists (JSON-friendly)."""
+    cur = con.execute(sql)
+    return [list(row) for row in cur.fetchall()]
+
+
+def write_gold(path: str | os.PathLike = GOLD_PATH, db_path: str | os.PathLike = DB_PATH) -> str:
+    """Pre-compute each gold query's result set and write the gold dataset as JSONL.
+
+    Each record is ``{id, question, gold_sql, gold_execution_result}``. The stored result set is what
+    the offline metrics compare against, so the evaluation step needs no database.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        records = [{**row, "gold_execution_result": _execute(con, row["gold_sql"])} for row in GOLD]
+    finally:
+        con.close()
+    with open(path, "w") as f:
+        f.write("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
     return str(path)
 
 
 if __name__ == "__main__":
     build_db()
-    write_gold_csv()
+    write_gold()
     print(f"Wrote {DB_PATH} and {GOLD_PATH}")

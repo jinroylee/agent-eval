@@ -1,72 +1,87 @@
-"""T2S metrics: execution-grounded soft_f1, AST component_match/ast_valid, judge groundedness."""
+"""T2S metrics: result-set soft_f1 (pre-computed), AST component_match/ast_valid, judge groundedness.
 
-import sqlite3
-
-import pytest
+`soft_f1` and the `t2s_*` judge metrics compare/inspect PRE-COMPUTED result sets supplied in the
+data — the gold rows come from the dataset (`metadata['gold_execution_result']`) and the predicted
+rows from the agent's own state (`metadata['execution_result']`). No database is touched at eval time.
+`component_match` / `ast_valid` are AST-only and read the SQL text.
+"""
 
 from agent_eval.core.contracts import EvalContext, MetaKey
 from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
-from agent_eval.metrics.t2s import AstValid, ComponentMatch, SoftF1, T2SFaithfulness
+from agent_eval.metrics.t2s import AstValid, ComponentMatch, SoftF1, T2SConsistency, T2SFaithfulness
 
 
-@pytest.fixture
-def db(tmp_path):
-    path = str(tmp_path / "t.sqlite")
-    con = sqlite3.connect(path)
-    con.executescript(
-        "CREATE TABLE emp (id INTEGER, name TEXT, salary REAL);"
-        "INSERT INTO emp VALUES (1,'Alice',150000),(2,'Bob',90000),(3,'Carol',120000);"
+def _ctx(output="", **meta):
+    return EvalContext(input="q", output=output, metadata=meta)
+
+
+# --- soft_f1: compares the predicted vs gold result sets, no DB -----------------------------------
+def test_soft_f1_perfect_match():
+    rows = [["Alice"], ["Carol"]]
+    r = SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: rows, MetaKey.GOLD_EXECUTION_RESULT: rows}))
+    assert r.error is None and r.score == 1.0
+
+
+def test_soft_f1_partial_credit_on_superset():
+    gold = [["Alice"], ["Carol"]]
+    pred = [["Alice"], ["Bob"], ["Carol"]]  # a dropped filter -> extra rows -> partial, not zero
+    r = SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: pred, MetaKey.GOLD_EXECUTION_RESULT: gold}))
+    assert 0.0 < r.score < 1.0
+
+
+def test_soft_f1_ignores_row_order_by_default():
+    gold = [["Alice"], ["Bob"]]
+    pred = [["Bob"], ["Alice"]]
+    r = SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: pred, MetaKey.GOLD_EXECUTION_RESULT: gold}))
+    assert r.score == 1.0
+
+
+def test_soft_f1_disjoint_results_score_zero():
+    r = SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: [["X"]], MetaKey.GOLD_EXECUTION_RESULT: [["Y"]]}))
+    assert r.error is None and r.score == 0.0
+
+
+def test_soft_f1_errors_when_a_result_set_is_missing():
+    # A missing result set means the metric CANNOT run (error), not a low score.
+    assert SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: [["A"]]})).error  # gold missing
+    assert SoftF1().score(_ctx(**{MetaKey.GOLD_EXECUTION_RESULT: [["A"]]})).error  # predicted missing
+    assert SoftF1().score(_ctx()).error
+
+
+# --- component_match / ast_valid: AST-only, read SQL text (unchanged, no DB) ----------------------
+def test_component_match_dips_on_alias():
+    r = ComponentMatch().score(
+        _ctx(**{MetaKey.SQL: "SELECT AVG(salary) AS a FROM emp", MetaKey.GOLD_SQL: "SELECT AVG(salary) FROM emp"})
     )
-    con.commit()
-    con.close()
-    return path
-
-
-def _ctx(sql, gold_sql, db, output="", **extra):
-    md = {MetaKey.SQL: sql, MetaKey.GOLD_SQL: gold_sql, MetaKey.DB_REF: db, **extra}
-    return EvalContext(input="q", output=output, metadata=md)
-
-
-def test_soft_f1_perfect_and_partial(db):
-    same = "SELECT name FROM emp WHERE salary > 100000"
-    assert SoftF1().score(_ctx(same, same, db)).score == 1.0
-    # dropped filter -> superset of rows -> partial credit, not 0
-    partial = SoftF1().score(_ctx("SELECT name FROM emp", same, db)).score
-    assert 0.0 < partial < 1.0
-
-
-def test_soft_f1_paraphrase_same_results(db):
-    gold = "SELECT AVG(salary) FROM emp"
-    pred = "SELECT AVG(salary) AS avg_salary FROM emp"
-    assert SoftF1().score(_ctx(pred, gold, db)).score == 1.0
-
-
-def test_component_match_dips_on_alias(db):
-    gold = "SELECT AVG(salary) FROM emp"
-    pred = "SELECT AVG(salary) AS avg_salary FROM emp"
-    r = ComponentMatch().score(_ctx(pred, gold, db))
     assert 0.0 < r.score < 1.0  # same table, different projection text
 
 
-def test_ast_valid(db):
-    assert AstValid().score(_ctx("SELECT 1", "SELECT 1", db)).passed is True
-    assert AstValid().score(_ctx("SELECT FROM WHERE", "SELECT 1", db)).passed is False
+def test_ast_valid():
+    assert AstValid().score(_ctx(**{MetaKey.SQL: "SELECT 1"})).passed is True
+    assert AstValid().score(_ctx(**{MetaKey.SQL: "SELECT FROM WHERE"})).passed is False
 
 
-def test_t2s_metrics_require_sql_and_db():
-    assert SoftF1().score(EvalContext(input="q")).error  # no sql
-    assert AstValid().score(EvalContext(input="q")).error
+def test_metrics_error_without_their_inputs():
+    assert AstValid().score(_ctx()).error  # no sql
+    assert SoftF1().score(_ctx()).error  # no result sets
 
 
-def test_t2s_faithfulness_judges_answer_against_execution(db):
+# --- judge groundedness: judge the NL answer against the predicted result set ---------------------
+def test_t2s_faithfulness_judges_answer_against_result():
     judge = FunctionJudge(lexical_overlap_judge)
-    sql = "SELECT name FROM emp WHERE salary > 100000"
-    ctx = _ctx(sql, sql, db, output="Alice and Carol earn over 100000")
+    ctx = _ctx(output="Alice and Carol earn over 100000", **{MetaKey.EXECUTION_RESULT: [["Alice"], ["Carol"]]})
     r = T2SFaithfulness(judge).score(ctx)
     assert r.error is None and r.score > 0.0
 
 
-def test_t2s_faithfulness_errors_on_bad_sql(db):
+def test_t2s_consistency_judges_answer_against_result():
     judge = FunctionJudge(lexical_overlap_judge)
-    ctx = _ctx("SELECT FROM nope", "SELECT 1", db, output="something")
-    assert T2SFaithfulness(judge).score(ctx).error  # query can't execute -> no result to judge
+    ctx = _ctx(output="Alice and Carol earn over 100000", **{MetaKey.EXECUTION_RESULT: [["Alice"], ["Carol"]]})
+    r = T2SConsistency(judge).score(ctx)
+    assert r.error is None and r.score > 0.0
+
+
+def test_t2s_judge_errors_without_result():
+    judge = FunctionJudge(lexical_overlap_judge)
+    # no execution_result -> nothing to judge the answer against -> error
+    assert T2SFaithfulness(judge).score(_ctx(output="something")).error

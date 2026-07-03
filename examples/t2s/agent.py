@@ -10,9 +10,13 @@ needs no LLM. A couple of its queries are deliberately imperfect to show what ea
   stays high while soft_f1 flags the error. That's the intended division of labor.
 
 Required state fields (pointed at by the config's ``state_map``):
-    sql     -> the generated SQL          (soft_f1 / component_match / ast_valid / t2s_*)
-    output  -> the final NL answer         (t2s_faithfulness / t2s_consistency / llm_judge)
-    tokens  -> tokens spent                 (token_usage)
+    sql              -> the generated SQL              (component_match / ast_valid)
+    execution_result -> the rows that SQL returned     (soft_f1 / t2s_faithfulness / t2s_consistency)
+    output           -> the final NL answer            (llm_judge)
+    tokens           -> tokens spent                    (token_usage)
+
+The agent runs its own query at predict time and captures the result rows in ``execution_result``;
+evaluation compares those against the gold rows stored in the dataset and never touches a database.
 """
 
 from __future__ import annotations
@@ -55,6 +59,7 @@ PRED_SQL = {
 class T2SState(TypedDict, total=False):
     input: str  # the natural-language question
     sql: str  # the generated SQL
+    execution_result: list  # the rows the query returned (captured here at predict time)
     output: str  # the final natural-language answer
     tokens: int
 
@@ -82,7 +87,12 @@ def answer_node(state: T2SState) -> dict:
     else:
         preview = "; ".join(", ".join("NULL" if c is None else str(c) for c in r) for r in rows[:10])
         answer = f"The query returned {len(rows)} row(s): {preview}."
-    return {"output": answer, "tokens": len(sql.split()) + len(answer.split())}
+    # Capture the result rows so evaluation can score them without re-running the query.
+    return {
+        "output": answer,
+        "execution_result": [list(r) for r in rows],
+        "tokens": len(sql.split()) + len(answer.split()),
+    }
 
 
 def build_graph():

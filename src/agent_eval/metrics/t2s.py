@@ -1,17 +1,21 @@
-"""T2S (text-to-SQL) metrics — execution-grounded + AST checks, plus judge groundedness.
+"""T2S (text-to-SQL) metrics — result-set correctness + AST checks, plus judge groundedness.
 
-| metric              | GT? | reads (EvalContext)                                       |
-|---------------------|-----|----------------------------------------------------------|
-| ``soft_f1``         | yes | ``metadata['sql']``, ``metadata['gold_sql']``, ``metadata['db_ref']`` |
-| ``component_match`` | yes | ``metadata['sql']``, ``metadata['gold_sql']``            |
-| ``ast_valid``       | no  | ``metadata['sql']``                                      |
-| ``t2s_faithfulness``| no  | ``metadata['sql']``, ``metadata['db_ref']``, ``output``  |
-| ``t2s_consistency`` | no  | ``metadata['sql']``, ``metadata['db_ref']``, ``output``  |
+| metric              | GT? | reads (EvalContext)                                                     |
+|---------------------|-----|------------------------------------------------------------------------|
+| ``soft_f1``         | yes | ``metadata['execution_result']``, ``metadata['gold_execution_result']``|
+| ``component_match`` | yes | ``metadata['sql']``, ``metadata['gold_sql']``                          |
+| ``ast_valid``       | no  | ``metadata['sql']``                                                    |
+| ``t2s_faithfulness``| no  | ``metadata['execution_result']``, ``output``                          |
+| ``t2s_consistency`` | no  | ``metadata['execution_result']``, ``output``                          |
 
-Objective correctness is gated on **execution** (the sound external verifier), never on a judge —
-the judge is confined to whether the final natural-language ``output`` faithfully reports what the
-query actually returned. Needs the ``[t2s]`` extra (``sqlglot``). Result-set comparison semantics
-(row order, duplicates, NULLs, float tolerance) are explicit via ``defaults.result_set_policy``.
+Objective correctness is graded on the **result set** the query produced — but the query is **not
+executed at eval time**. The predicted result set is supplied by the agent's own state
+(``metadata['execution_result']``) and the gold result set is stored in the dataset
+(``metadata['gold_execution_result']``). ``soft_f1`` compares those two row-sets (partial credit via
+cell-bag F1); the judge is confined to whether the natural-language ``output`` faithfully reports the
+predicted result set. Result-set comparison semantics (row order, duplicates, NULLs, float tolerance)
+are explicit via ``defaults.result_set_policy``. The AST metrics (``component_match``, ``ast_valid``)
+parse the SQL text and need the ``[t2s]`` extra (``sqlglot``).
 """
 
 from __future__ import annotations
@@ -23,7 +27,6 @@ from agent_eval.core.contracts import Aggregation, CostClass, EvalContext, MetaK
 from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import BuildContext, MetricRegistry
 from agent_eval.execution.compare import ResultSetPolicy, soft_f1
-from agent_eval.execution.harness import ExecResult, ExecutionHarness
 from agent_eval.judges.backend import JudgeRequest
 from agent_eval.metrics.common import JudgeMetric, resolve_judge
 
@@ -45,11 +48,24 @@ def _gold_sql(ctx: EvalContext) -> str:
     return str(sql)
 
 
-def _db_ref(ctx: EvalContext) -> str:
-    db = ctx.metadata.get(MetaKey.DB_REF)
-    if not db:
-        raise ValueError("metadata['db_ref'] (database to execute against) is required")
-    return str(db)
+def _rows(value) -> list[tuple]:
+    """Coerce a stored result set into a list of row tuples (a bare scalar becomes a 1-cell row)."""
+    return [tuple(row) if isinstance(row, (list, tuple)) else (row,) for row in value]
+
+
+def _result(ctx: EvalContext) -> list[tuple]:
+    # An empty result set ([]) is valid; only a genuinely absent one (None) is an error.
+    rows = ctx.metadata.get(MetaKey.EXECUTION_RESULT)
+    if rows is None:
+        raise ValueError("metadata['execution_result'] (the predicted SQL's result rows) is required")
+    return _rows(rows)
+
+
+def _gold_result(ctx: EvalContext) -> list[tuple]:
+    rows = ctx.metadata.get(MetaKey.GOLD_EXECUTION_RESULT)
+    if rows is None:
+        raise ValueError("metadata['gold_execution_result'] (the gold SQL's result rows) is required")
+    return _rows(rows)
 
 
 def _policy(arg) -> ResultSetPolicy:
@@ -77,39 +93,35 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def _format_rows(result: ExecResult) -> list[str]:
-    """Render an execution result as compact text lines for the judge to read."""
-    rows = result.rows or []
-    header = " | ".join(result.columns or [])
-    lines = [header] if header else []
+def _format_rows(rows: list[tuple]) -> list[str]:
+    """Render a result set as compact text lines for the judge to read."""
+    if not rows:
+        return ["(empty result set)"]
+    lines = []
     for row in rows[:_MAX_RESULT_ROWS]:
         lines.append(" | ".join("NULL" if c is None else str(c) for c in row))
     if len(rows) > _MAX_RESULT_ROWS:
         lines.append(f"... ({len(rows) - _MAX_RESULT_ROWS} more rows)")
-    return lines or ["(empty result set)"]
+    return lines
 
 
-# --------------------------------------------------------------------------- execution-grounded (GT)
+# --------------------------------------------------------------------------- result-set correctness (GT)
 class SoftF1(BaseMetric):
-    """Cell-bag F1 between the predicted and gold **result sets** (graded partial credit)."""
+    """Cell-bag F1 between the predicted and gold **result sets** (graded partial credit).
+
+    Both result sets are supplied in the data — no query is executed here: the predicted rows in
+    ``metadata['execution_result']`` and the gold rows in ``metadata['gold_execution_result']``.
+    """
 
     name = "soft_f1"
-    cost_class = CostClass.CHEAP
+    cost_class = CostClass.FREE
     aggregation = Aggregation.MEAN
 
-    def __init__(self, dialect: str = "sqlite", result_policy=None, timeout_s: float = 5.0) -> None:
-        self.dialect = dialect
-        self.harness = ExecutionHarness(policy=_policy(result_policy), timeout_s=timeout_s)
+    def __init__(self, result_policy=None) -> None:
+        self.policy = _policy(result_policy)
 
     def _compute(self, ctx: EvalContext) -> MetricResult:
-        db = _db_ref(ctx)
-        gold = self.harness.run(_gold_sql(ctx), db)
-        if gold.error:
-            raise ValueError(f"gold query failed to execute: {gold.error}")
-        pred = self.harness.run(_sql(ctx), db)
-        if pred.error:
-            return MetricResult(self.name, 0.0, passed=None, detail={"pred_error": pred.error})
-        score = soft_f1(pred.rows or [], gold.rows or [], self.harness.policy)
+        score = soft_f1(_result(ctx), _gold_result(ctx), self.policy)
         return MetricResult(self.name, score, passed=None)
 
 
@@ -164,27 +176,20 @@ _T2S_CONSISTENCY_RUBRIC = (
 
 
 class _ExecutionJudgeMetric(JudgeMetric):
-    """Judge the final NL ``output`` against what the query actually returned (the execution result)."""
+    """Judge the final NL ``output`` against the predicted result set (``metadata['execution_result']``).
+
+    The result set is supplied in the data (the agent ran its own query); nothing is executed here.
+    """
 
     requires = frozenset({"output"})
     _rubric = ""
 
-    def __init__(
-        self, backend, panel=(), dialect: str = "sqlite", result_policy=None, timeout_s: float = 5.0
-    ):
-        super().__init__(backend, panel)
-        self.dialect = dialect
-        self.harness = ExecutionHarness(policy=_policy(result_policy), timeout_s=timeout_s)
-
     def build_request(self, ctx: EvalContext) -> JudgeRequest:
-        result = self.harness.run(_sql(ctx), _db_ref(ctx))
-        if result.error:
-            raise ValueError(f"query failed to execute, no result to judge against: {result.error}")
         return JudgeRequest(
             instruction=self._rubric,
             question=str(ctx.input),
             response=str(ctx.output),
-            context=tuple(_format_rows(result)),
+            context=tuple(_format_rows(_result(ctx))),
         )
 
 
@@ -208,21 +213,8 @@ def _result_policy(p: dict, ctx: BuildContext):
 
 
 def register(registry: MetricRegistry) -> None:
-    registry.register(
-        "soft_f1",
-        lambda p, ctx: SoftF1(_dialect(p, ctx), _result_policy(p, ctx), p.get("timeout_s", 5.0)),
-    )
+    registry.register("soft_f1", lambda p, ctx: SoftF1(_result_policy(p, ctx)))
     registry.register("component_match", lambda p, ctx: ComponentMatch(_dialect(p, ctx)))
     registry.register("ast_valid", lambda p, ctx: AstValid(_dialect(p, ctx)))
-    registry.register(
-        "t2s_faithfulness",
-        lambda p, ctx: T2SFaithfulness(
-            resolve_judge(ctx), ctx.panel, _dialect(p, ctx), _result_policy(p, ctx)
-        ),
-    )
-    registry.register(
-        "t2s_consistency",
-        lambda p, ctx: T2SConsistency(
-            resolve_judge(ctx), ctx.panel, _dialect(p, ctx), _result_policy(p, ctx)
-        ),
-    )
+    registry.register("t2s_faithfulness", lambda p, ctx: T2SFaithfulness(resolve_judge(ctx), ctx.panel))
+    registry.register("t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel))

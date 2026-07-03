@@ -12,17 +12,17 @@ from agent_eval.datasets.base import record_to_context
 
 def read_jsonl_records(path: str) -> list[dict]:
     """Read ``.jsonl`` (one JSON object per line) or a ``.json`` array of objects into raw dicts."""
-    text = Path(path).read_text().strip()
+    text = Path(path).read_text(encoding="utf-8").strip()
     if not text:
         return []
     if text.startswith("["):
         return list(json.loads(text))
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+    return [json.loads(line) for line in text.splitlines() if line.strip() and not line.strip().startswith("//")]
 
 
 def write_jsonl_records(path: str, records: list[dict]) -> None:
     """Write records as JSONL (one object per line)."""
-    Path(path).write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n")
+    Path(path).write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
 
 
 class JsonlAdapter:

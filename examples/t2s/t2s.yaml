@@ -2,8 +2,8 @@ version: 1
 agent_type: t2s
 
 defaults:
-  dialect: sqlite
-  # Result-set comparison semantics (the documented silent-failure source for execution metrics).
+  dialect: sqlite                          # SQL dialect for component_match / ast_valid parsing
+  # Result-set comparison semantics for soft_f1 (the documented silent-failure source).
   result_set_policy: {row_order: ignore, duplicates: keep, nulls: distinct, float_tolerance: 1.0e-6}
 
 # judge:                                   # optional real judge; omit -> deterministic offline stub
@@ -11,11 +11,10 @@ defaults:
 
 datasets:
   gold:
-    adapter: tabular
-    path: examples/t2s/gold.csv
-    format: csv
-    # gold_sql -> metadata['gold_sql']; db -> metadata['db_ref'] (executed against).
-    field_map: {input: question, gold_sql: gold_sql, db_ref: db}
+    adapter: jsonl
+    path: examples/t2s/gold.jsonl          # written by build_db.py: gold_sql + pre-computed result rows
+    # gold_sql -> metadata['gold_sql']; gold_execution_result -> metadata['gold_execution_result'].
+    field_map: {input: question, gold_sql: gold_sql, gold_execution_result: gold_execution_result}
   predictions:
     adapter: jsonl
     path: examples/t2s/predictions.jsonl
@@ -27,11 +26,12 @@ prediction:
   input_key: input
   state_map:                              # canonical field <- agent state key
     sql: sql                              #   generated SQL -> metadata['sql']
+    execution_result: execution_result    #   rows the agent's query returned -> metadata['execution_result']
     output: output                        #   final NL answer
     tokens: tokens
 
 suites:
-  correctness:                            # objective: gated on execution + AST, never on a judge
+  correctness:                            # objective: graded on the result set + AST, never on a judge
     dataset: predictions
     metrics: [soft_f1, component_match, ast_valid]
     gate:
