@@ -22,25 +22,34 @@ _HEAVY_FIELDS = frozenset({"execution_result", "gold_execution_result"})
 
 
 def csv_preview_path(jsonl_path: str) -> str:
-    """Sibling CSV path for a prediction JSONL: ``predictions.jsonl`` -> ``predictions.preview.csv``.
+    """Sibling CSV path for a prediction JSONL: ``predictions.jsonl`` -> ``predictions.csv``.
 
-    The ``.preview.`` marker signals a view, not data, so nobody points a suite ``source`` at it.
+    Kept as a distinct file (not an evaluate input); point suite ``source`` at the JSONL, never this.
     """
-    return f"{Path(jsonl_path).with_suffix('')}.preview.csv"
+    return f"{Path(jsonl_path).with_suffix('')}.csv"
+
+
+def _one_line(text: str) -> str:
+    """Fold embedded line breaks to spaces so each record occupies exactly one spreadsheet row.
+
+    Multi-line agent output otherwise wraps across rows and visually shatters the table; the preview
+    is already a lossy view, so trading exact whitespace for a clean grid is the right call.
+    """
+    return text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
 
 
 def _cell(key: str, value: Any) -> str:
-    """Render one value as a spreadsheet-friendly cell."""
+    """Render one value as a single-line, spreadsheet-friendly cell."""
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (str, int, float)):
-        return str(value)
+        return _one_line(str(value))
     if key in _HEAVY_FIELDS and isinstance(value, (list, tuple)):
         return f"<{len(value)} rows>"
     # lists / dicts / anything else -> compact JSON (ensure_ascii=False keeps non-ASCII legible).
-    return json.dumps(value, ensure_ascii=False, default=str)
+    return _one_line(json.dumps(value, ensure_ascii=False, default=str))
 
 
 def _flatten(record: dict) -> dict[str, str]:
@@ -55,10 +64,12 @@ def _flatten(record: dict) -> dict[str, str]:
 
 
 def write_csv_preview(jsonl_path: str, records: list[dict]) -> str:
-    """Write a UTF-8 CSV view of prediction ``records`` next to the JSONL; return the CSV path.
+    """Write a CSV view of prediction ``records`` next to the JSONL; return the CSV path.
 
     Columns are the canonical fields present (in a fixed reading order) followed by the union of
-    ``metadata.*`` keys across all records, sorted for a stable header on ragged data.
+    ``metadata.*`` keys across all records, sorted for a stable header on ragged data. Written as
+    UTF-8 *with a BOM* (``utf-8-sig``) so Excel auto-detects the encoding and renders CJK/Korean
+    correctly instead of falling back to the system code page (CP949) and showing mojibake.
     """
     rows = [_flatten(r) for r in records]
     ordered = [f for f in _CANONICAL_ORDER if any(f in r for r in rows)]
@@ -66,7 +77,7 @@ def write_csv_preview(jsonl_path: str, records: list[dict]) -> str:
     fieldnames = ordered + meta_cols
 
     csv_path = csv_preview_path(jsonl_path)
-    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)

@@ -23,7 +23,7 @@ prediction:
   source: gold
   target: predictions
   input_key: input
-  generate_csv: true                      # also write predictions.preview.csv for easy monitoring
+  generate_csv: true                      # also write predictions.csv for easy monitoring
   state_map:                              # canonical field <- agent state key
     sql: sql                              #   generated SQL -> metadata['sql']
     execution_result: execution_result    #   rows the agent's query returned -> metadata['execution_result']

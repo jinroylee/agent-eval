@@ -19,7 +19,7 @@ prediction:                               # how to run the agent to fill predict
   source: gold
   target: predictions
   input_key: input                        # graph state key the question is passed under
-  generate_csv: true                      # also write predictions.preview.csv for easy monitoring
+  generate_csv: true                      # also write predictions.csv for easy monitoring
   state_map:                              # canonical eval field <- agent's final state key
     output: answer                        #   the response judge + bertscore score
     tokens: tokens                        #   tokens spent (token_usage)

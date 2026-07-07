@@ -23,6 +23,8 @@ htmlcov/
 
 # Generated example artifacts (created by `agent-eval predict` / build_db.py)
 examples/*/predictions.jsonl
-examples/*/predictions.preview.csv
+examples/*/predictions.csv
 examples/t2s/sample.sqlite
 examples/t2s/gold.csv
+
+transfer_guide.md

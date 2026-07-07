@@ -1,0 +1,6 @@
+input,output,expected,metadata.latency_ms,metadata.tokens
+How do I reset my password?,Go to Settings > Security and click 'Reset password'. You'll get an email with a link that lets you choose a new password.,Go to Settings > Security and click 'Reset password'. You'll get an email with a link that lets you choose a new password.,1.5886250184848905,23
+What are your support hours?,Our support team is available 24/7 by chat and email.,Our support team is available 24/7 by chat and email.,0.25220902170985937,10
+Where can I download invoices?,"Open Billing > Invoices, then click the download icon next to any invoice to get a PDF.","Open Billing > Invoices, then click the download icon next to any invoice to get a PDF.",0.20291702821850777,17
+How do I cancel my subscription?,You can cancel anytime under Billing > Subscription by clicking 'Cancel plan'. Your plan stays active until the end of the current billing period.,You can cancel anytime under Billing > Subscription by clicking 'Cancel plan'. Your plan stays active until the end of the current billing period.,0.18324994016438723,24
+How do I export my data?,I'm not sure about that; let me connect you with a human agent.,Open Settings > Data and click 'Export' to download a full archive of your account data.,0.17945899162441492,13
