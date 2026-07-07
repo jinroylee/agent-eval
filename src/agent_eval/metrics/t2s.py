@@ -13,8 +13,11 @@ executed at eval time**. The predicted result set is supplied by the agent's own
 (``metadata['execution_result']``) and the gold result set is stored in the dataset
 (``metadata['gold_execution_result']``). ``soft_f1`` compares those two row-sets (partial credit via
 cell-bag F1); the judge is confined to whether the natural-language ``output`` faithfully reports the
-predicted result set. Result-set comparison semantics (row order, duplicates, NULLs, float tolerance)
-are explicit via ``defaults.result_set_policy``. The AST metrics (``component_match``, ``ast_valid``)
+predicted result set — and it reads a **bounded statistical digest** of that set (per-column
+aggregates over every row + a small sample; see ``_digest_lines``), never the raw rows, so the prompt
+stays small no matter how large the result is. Result-set comparison semantics (row order, duplicates,
+NULLs, float tolerance) are explicit via ``defaults.result_set_policy``. The AST metrics
+(``component_match``, ``ast_valid``)
 parse the SQL text and need the ``[t2s]`` extra (``sqlglot``).
 """
 
@@ -30,7 +33,11 @@ from agent_eval.execution.compare import ResultSetPolicy, soft_f1
 from agent_eval.judges.backend import JudgeRequest
 from agent_eval.metrics.common import JudgeMetric, resolve_judge
 
-_MAX_RESULT_ROWS = 50  # cap rows shown to the judge so the prompt stays bounded
+# The judge never sees the raw result set (it may be enormous). Instead it sees a bounded
+# *statistical digest* whose size is O(columns), not O(rows): per-column aggregates + a small sample.
+_SAMPLE_ROWS = 5  # rows shown verbatim, so the judge sees real structure/formatting
+_MAX_DISTINCT = 20  # cap on distinct values enumerated per column (else only aggregates are shown)
+_MAX_COLUMNS = 20  # cap on columns summarized (wide result sets)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -93,15 +100,92 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def _format_rows(rows: list[tuple]) -> list[str]:
-    """Render a result set as compact text lines for the judge to read."""
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _num(x) -> str:
+    """Compact numeric rendering: drop a trailing ``.0``, round long floats for readability."""
+    f = float(x)
+    return str(int(f)) if f.is_integer() else str(round(f, 6))
+
+
+def _cell(c) -> str:
+    return "NULL" if c is None else str(c)
+
+
+def _distinct(values: list) -> list:
+    """Distinct values, order-preserving (ignores unhashable-cell edge cases: cells are scalars)."""
+    seen: set = set()
+    out: list = []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _column_summary(idx: int, cells: list, max_distinct: int) -> str:
+    """One line summarizing a column: type, counts, and either aggregates or enumerated values."""
+    non_null = [c for c in cells if c is not None]
+    n_null = len(cells) - len(non_null)
+    distinct = _distinct(non_null)
+    fields: list[str] = []
+    if non_null and all(_is_number(c) for c in non_null):
+        nums = [float(c) for c in non_null]
+        fields += [
+            "number",
+            f"non-null={len(non_null)}",
+            f"distinct={len(distinct)}",
+            f"min={_num(min(nums))}",
+            f"max={_num(max(nums))}",
+            f"sum={_num(sum(nums))}",
+            f"mean={_num(sum(nums) / len(nums))}",
+        ]
+        if 0 < len(distinct) <= max_distinct:
+            fields.append("values=[" + ", ".join(_num(v) for v in distinct) + "]")
+    else:
+        shown = distinct[:max_distinct]
+        more = len(distinct) - len(shown)
+        vals = "values=[" + ", ".join(_cell(v) for v in shown) + "]"
+        fields += ["text", f"non-null={len(non_null)}", f"distinct={len(distinct)}",
+                   vals + (f" (+{more} more)" if more > 0 else "")]
+    if n_null:
+        fields.append(f"nulls={n_null}")
+    return f"Column {idx + 1}: " + ", ".join(fields)
+
+
+def _digest_lines(
+    rows: list[tuple],
+    *,
+    sample_rows: int = _SAMPLE_ROWS,
+    max_distinct: int = _MAX_DISTINCT,
+    max_columns: int = _MAX_COLUMNS,
+) -> list[str]:
+    """A **bounded** statistical digest of a result set for the judge to read.
+
+    Instead of dumping (a truncated prefix of) the rows — which fails silently once the answer refers
+    to a value past the cutoff — we summarize the *whole* set: per-column aggregates computed over
+    every row, distinct values when few, and a small verbatim sample. The output size is O(columns),
+    so it stays small whether the query returned 8 rows or 8 million.
+    """
     if not rows:
         return ["(empty result set)"]
-    lines = []
-    for row in rows[:_MAX_RESULT_ROWS]:
-        lines.append(" | ".join("NULL" if c is None else str(c) for c in row))
-    if len(rows) > _MAX_RESULT_ROWS:
-        lines.append(f"... ({len(rows) - _MAX_RESULT_ROWS} more rows)")
+    n_rows = len(rows)
+    n_cols = max(len(r) for r in rows)
+    if n_rows == 1 and n_cols == 1:
+        return [f"Result digest — single value: {_cell(rows[0][0])}"]
+
+    lines = [f"Result digest — full set: {n_rows} row(s), {n_cols} column(s) (summary, not raw rows)."]
+    shown_cols = min(n_cols, max_columns)
+    for idx in range(shown_cols):
+        lines.append(_column_summary(idx, [r[idx] if idx < len(r) else None for r in rows], max_distinct))
+    if n_cols > max_columns:
+        lines.append(f"... (+{n_cols - max_columns} more columns)")
+
+    k = min(sample_rows, n_rows)
+    lines.append(f"Sample rows (first {k} of {n_rows}):")
+    lines += ["  " + " | ".join(_cell(c) for c in r) for r in rows[:k]]
     return lines
 
 
@@ -165,13 +249,22 @@ class AstValid(BaseMetric):
 
 # --------------------------------------------------------------------------- groundedness (non-GT, judge)
 _T2S_FAITHFULNESS_RUBRIC = (
-    "The EVIDENCE is the exact result set the SQL query returned. Judge whether the RESPONSE TO "
-    "EVALUATE faithfully reports that result: numbers, names, and counts must match the evidence and "
-    "nothing should be invented. Penalize fabricated or altered values."
+    "The EVIDENCE is a STATISTICAL DIGEST of the full result set the SQL query returned — row and "
+    "column counts, per-column min/max/sum/mean and distinct values, and a small sample of rows (NOT "
+    "the complete rows). Judge whether the RESPONSE TO EVALUATE faithfully reports this result: any "
+    "count must match the reported row/value counts, any figure (total, average, minimum, maximum, "
+    "count) must match the corresponding column aggregate, and any value it attributes to the result "
+    "must be consistent with the enumerated or sampled values. Penalize figures or entities that "
+    "contradict the digest or appear fabricated. If a specific value is not shown in the digest and "
+    "cannot be confirmed or denied by it, do not penalize its use."
 )
 _T2S_CONSISTENCY_RUBRIC = (
-    "The EVIDENCE is the exact result set the SQL query returned. Judge whether the RESPONSE TO "
-    "EVALUATE is consistent with it — it must not state anything that contradicts the result set."
+    "The EVIDENCE is a STATISTICAL DIGEST of the full result set the SQL query returned (counts, "
+    "per-column aggregates and distinct values, and a small sample of rows — not the complete rows). "
+    "Judge whether the RESPONSE TO EVALUATE is consistent with it: it must not state anything that "
+    "contradicts the digest — a count, total, or value that conflicts with the reported aggregates or "
+    "enumerated values. Do not penalize supported facts that are merely omitted, nor specific values "
+    "the digest can neither confirm nor deny."
 )
 
 
@@ -179,17 +272,39 @@ class _ExecutionJudgeMetric(JudgeMetric):
     """Judge the final NL ``output`` against the predicted result set (``metadata['execution_result']``).
 
     The result set is supplied in the data (the agent ran its own query); nothing is executed here.
+    The judge reads a **bounded digest** of that result set (see :func:`_digest_lines`), never the raw
+    rows, so the prompt stays small no matter how many rows the query returned.
     """
 
     requires = frozenset({"output"})
     _rubric = ""
 
+    def __init__(
+        self,
+        backend,
+        panel=(),
+        *,
+        sample_rows: int = _SAMPLE_ROWS,
+        max_distinct: int = _MAX_DISTINCT,
+        max_columns: int = _MAX_COLUMNS,
+    ) -> None:
+        super().__init__(backend, panel)
+        self.sample_rows = sample_rows
+        self.max_distinct = max_distinct
+        self.max_columns = max_columns
+
     def build_request(self, ctx: EvalContext) -> JudgeRequest:
+        digest = _digest_lines(
+            _result(ctx),
+            sample_rows=self.sample_rows,
+            max_distinct=self.max_distinct,
+            max_columns=self.max_columns,
+        )
         return JudgeRequest(
             instruction=self._rubric,
             question=str(ctx.input),
             response=str(ctx.output),
-            context=tuple(_format_rows(_result(ctx))),
+            context=tuple(digest),
         )
 
 
@@ -212,9 +327,18 @@ def _result_policy(p: dict, ctx: BuildContext):
     return p.get("result_policy") or ctx.defaults.get("result_set_policy")
 
 
+def _digest_params(p: dict) -> dict:
+    """The digest-tuning params a config may set on the T2S judge metrics (all optional)."""
+    return {k: p[k] for k in ("sample_rows", "max_distinct", "max_columns") if k in p}
+
+
 def register(registry: MetricRegistry) -> None:
     registry.register("soft_f1", lambda p, ctx: SoftF1(_result_policy(p, ctx)))
     registry.register("component_match", lambda p, ctx: ComponentMatch(_dialect(p, ctx)))
     registry.register("ast_valid", lambda p, ctx: AstValid(_dialect(p, ctx)))
-    registry.register("t2s_faithfulness", lambda p, ctx: T2SFaithfulness(resolve_judge(ctx), ctx.panel))
-    registry.register("t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel))
+    registry.register(
+        "t2s_faithfulness", lambda p, ctx: T2SFaithfulness(resolve_judge(ctx), ctx.panel, **_digest_params(p))
+    )
+    registry.register(
+        "t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel, **_digest_params(p))
+    )

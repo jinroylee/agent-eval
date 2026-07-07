@@ -72,10 +72,13 @@ and pass the list to `evaluate` (see [offline-evaluation.md](offline-evaluation.
 
 ## Add an execution backend (T2S)
 
-The T2S metrics talk to an `ExecutionHarness` over a `readonly_connection`. The SQLite backend lives
-in `execution/sandbox.py`; a Postgres or other backend slots in behind the same `run(sql, db_ref)
--> ExecResult` interface, and the result-set comparison policy (`execution/compare.py`) is reused
-unchanged.
+The eval metrics never touch a database — they compare **pre-computed** result sets
+(`metadata['execution_result']` from the agent's state, `metadata['gold_execution_result']` from the
+dataset). Execution happens earlier: the agent runs its own query at predict time, and the gold rows
+are computed once at data-prep time. A read-only SQLite executor ships for that step
+(`execution/harness.py` + `execution/sandbox.py`, over a `readonly_connection`); a Postgres or other
+backend slots in behind the same `run(sql, db_path) -> ExecResult` interface. The result-set
+comparison policy (`execution/compare.py`) is reused unchanged by `soft_f1`.
 
 ## Keep it focused
 

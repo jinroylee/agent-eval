@@ -73,24 +73,29 @@ default; pass `metadata['relevance']` (`{id: gain}`) for graded relevance.
 
 ## 3. T2S — text-to-SQL correctness + groundedness
 
-Needs the `[t2s]` extra (`sqlglot`). The generated SQL lives in `metadata['sql']`, the gold SQL in
-`metadata['gold_sql']`, and the database to execute against in `metadata['db_ref']`. The final
-natural-language answer is `output`.
+Needs the `[t2s]` extra (`sqlglot`) for the AST metrics. The generated SQL lives in `metadata['sql']`
+and the gold SQL in `metadata['gold_sql']`. The query is **not executed at eval time**: the predicted
+result set is supplied by the agent's own state in `metadata['execution_result']`, and the gold result
+set is stored in the dataset in `metadata['gold_execution_result']`. The final natural-language answer
+is `output`.
 
 | metric | GT? | reads | agg | what |
 |---|---|---|---|---|
-| `soft_f1` | yes | `metadata['sql']`, `metadata['gold_sql']`, `metadata['db_ref']` | mean | cell-F1 of the executed result sets (the **correctness gate**) |
+| `soft_f1` | yes | `metadata['execution_result']`, `metadata['gold_execution_result']` | mean | cell-F1 of the predicted vs gold result sets (the **correctness gate**) |
 | `component_match` | yes | `metadata['sql']`, `metadata['gold_sql']` | mean | AST overlap (tables + projections) — diagnostic |
 | `ast_valid` | no | `metadata['sql']` | rate | does the SQL parse? |
-| `t2s_faithfulness` | no | `metadata['sql']`, `metadata['db_ref']`, `output` | mean | does the NL answer report the query result faithfully? |
-| `t2s_consistency` | no | `metadata['sql']`, `metadata['db_ref']`, `output` | mean | does the NL answer avoid contradicting the result? |
+| `t2s_faithfulness` | no | `metadata['execution_result']`, `output` | mean | does the NL answer report the query result faithfully? |
+| `t2s_consistency` | no | `metadata['execution_result']`, `output` | mean | does the NL answer avoid contradicting the result? |
 
-**Objective correctness is gated on execution, never on a judge.** `soft_f1` runs both the predicted
-and gold SQL and compares result sets (partial credit via cell-bag F1); the judge is confined to
-whether the NL `output` faithfully reports what the query *actually returned*. Result-set comparison
-is explicit and configurable — `defaults.result_set_policy` controls row order, duplicates, NULLs,
-and float tolerance (the documented silent-failure source for execution metrics). Params on the
-execution metrics: `dialect`, `result_policy`, `timeout_s`.
+**Objective correctness is gated on the result set, never on a judge.** `soft_f1` compares the
+predicted and gold result sets — both pre-computed and supplied in the data, so no database is touched
+at eval time (partial credit via cell-bag F1). The judge is confined to whether the NL `output`
+faithfully reports what the query returned, and it reads a **bounded statistical digest** of the
+result set (per-column aggregates + a small sample), never the raw rows, so it scales to any result
+size. Result-set comparison is explicit and configurable — `defaults.result_set_policy` controls row
+order, duplicates, NULLs, and float tolerance (the documented silent-failure source for execution
+metrics). Params: `soft_f1` takes `result_policy`; `component_match` / `ast_valid` take `dialect`; the
+judge metrics take `sample_rows` / `max_distinct` / `max_columns`.
 
 > The T2S example ([`examples/t2s`](../examples/t2s/)) is built to show the division of labor:
 > a paraphrased query keeps `soft_f1` at 1.0 while `component_match` dips; a dropped `WHERE` keeps
@@ -103,4 +108,4 @@ execution metrics: `dialect`, `result_policy`, `timeout_s`.
 The final metric set lists *consistency* under both RAG and T2S. They share the idea (the answer must
 not contradict the evidence) but read different evidence, so the registry exposes them under distinct
 type names: `consistency` (RAG, evidence = retrieved chunks) and `t2s_consistency` (T2S, evidence =
-the executed result set). Same for `faithfulness` / `t2s_faithfulness`.
+the query's result set, as a bounded digest). Same for `faithfulness` / `t2s_faithfulness`.

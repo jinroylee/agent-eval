@@ -142,5 +142,5 @@ def register(registry: MetricRegistry) -> None:
     registry.register("recall_at_k", lambda p, ctx: RecallAtK(_k(p, ctx)))
     registry.register("precision_at_k", lambda p, ctx: PrecisionAtK(_k(p, ctx)))
     registry.register("ndcg_at_k", lambda p, ctx: NdcgAtK(_k(p, ctx)))
-    registry.register("faithfulness", lambda p, ctx: Faithfulness(resolve_judge(ctx), ctx.panel, **p))
-    registry.register("consistency", lambda p, ctx: ResponseConsistency(resolve_judge(ctx), ctx.panel, **p))
+    registry.register("faithfulness", lambda p, ctx: Faithfulness(resolve_judge(ctx), ctx.panel))
+    registry.register("consistency", lambda p, ctx: ResponseConsistency(resolve_judge(ctx), ctx.panel))
