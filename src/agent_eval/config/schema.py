@@ -24,7 +24,7 @@ class SuiteModel(BaseModel):
 
 
 class DatasetModel(BaseModel):
-    adapter: str  # jsonl | tabular
+    adapter: str = "jsonl"  # jsonl | tabular (defaults to jsonl; the prediction target is always jsonl)
     path: str
     format: str | None = None
     field_map: dict[str, str] = Field(default_factory=dict)  # target field -> source column
@@ -42,9 +42,10 @@ class PredictionModel(BaseModel):
 
     graph: str
     source: str  # dataset name holding the gold inputs + references
-    target: str  # dataset name to write predictions into (its `path` is the output file)
+    target: str  # dataset name to write predictions into (its `path` is the output file); always jsonl
     input_key: str = "input"  # key under which the question is passed into the graph state
     state_map: dict[str, str] = Field(default_factory=dict)  # target field -> graph state key
+    generate_csv: bool = False  # also write a flattened, human-readable CSV view next to the jsonl
 
 
 class JudgeModel(BaseModel):

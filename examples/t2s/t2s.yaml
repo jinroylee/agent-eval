@@ -16,14 +16,14 @@ datasets:
     # gold_sql -> metadata['gold_sql']; gold_execution_result -> metadata['gold_execution_result'].
     field_map: {input: question, gold_sql: gold_sql, gold_execution_result: gold_execution_result}
   predictions:
-    adapter: jsonl
-    path: examples/t2s/predictions.jsonl
+    path: examples/t2s/predictions.jsonl    # always jsonl — no adapter needed
 
 prediction:
   graph: examples/t2s/agent.py:graph
   source: gold
   target: predictions
   input_key: input
+  generate_csv: true                      # also write predictions.preview.csv for easy monitoring
   state_map:                              # canonical field <- agent state key
     sql: sql                              #   generated SQL -> metadata['sql']
     execution_result: execution_result    #   rows the agent's query returned -> metadata['execution_result']

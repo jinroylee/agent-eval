@@ -24,6 +24,7 @@ from agent_eval.core.contracts import MetaKey
 from agent_eval.core.errors import ConfigError
 from agent_eval.datasets.base import CONTEXT_FIELDS, load_records, to_canonical
 from agent_eval.datasets.jsonl import write_jsonl_records
+from agent_eval.harness.preview import write_csv_preview
 
 
 def load_graph(dotted: str) -> Any:
@@ -76,4 +77,6 @@ def predict(cfg: ConfigModel) -> list[dict]:
     if target_spec.adapter != "jsonl":
         raise ConfigError("prediction.target dataset must use the 'jsonl' adapter")
     write_jsonl_records(target_spec.path, out)
+    if pred.generate_csv:
+        write_csv_preview(target_spec.path, out)
     return out

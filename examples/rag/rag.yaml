@@ -14,14 +14,14 @@ datasets:
     # relevant -> metadata['relevant_ids'] (gold); reference -> the gold answer.
     field_map: {input: question, expected: reference, relevant_ids: relevant}
   predictions:
-    adapter: jsonl
-    path: examples/rag/predictions.jsonl
+    path: examples/rag/predictions.jsonl    # always jsonl — no adapter needed
 
 prediction:
   graph: examples/rag/agent.py:graph
   source: gold
   target: predictions
   input_key: input
+  generate_csv: true                      # also write predictions.preview.csv for easy monitoring
   state_map:                              # canonical field <- agent state key
     retrieved_ids: retrieved_ids          #   ranked ids -> metadata['retrieved_ids']
     retrieved_context: retrieved_context  #   chunk texts (top-level field)

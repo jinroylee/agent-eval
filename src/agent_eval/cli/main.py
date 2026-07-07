@@ -37,6 +37,10 @@ def predict(
     records = run_predict(cfg)
     out_path = cfg.datasets[cfg.prediction.target].path
     typer.echo(f"Wrote {len(records)} prediction(s) to {out_path}")
+    if cfg.prediction.generate_csv:
+        from agent_eval.harness.preview import csv_preview_path
+
+        typer.echo(f"Wrote human-readable CSV view to {csv_preview_path(out_path)}")
 
 
 @app.command()
