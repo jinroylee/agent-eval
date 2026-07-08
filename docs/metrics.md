@@ -83,8 +83,9 @@ Each result set is canonically an **array of rows, one `dict[str, Any]` per row*
 e.g. `[{"name": "Alice", "dept": "Engineering"}, ...]`. Loosely-typed encodings are coerced to that
 shape on read rather than rejected — a whole set stored as a JSON *string* is parsed, a single
 unwrapped row `dict` is wrapped, and positional/scalar rows are named `col1, col2, …`. `soft_f1` grades
-the multiset of cell *values*, so column names need not match between predicted and gold (an aliased
-column still scores 1.0); the judge digest labels columns by their real name.
+the multiset of **`(column, value)` facts**: each cell is one fact, and a true positive is the same
+value **under the same column** — so an omitted column costs recall and an aliased/renamed column no
+longer matches (column identity is significant). The judge digest labels columns by their real name.
 
 | metric | GT? | reads | agg | what |
 |---|---|---|---|---|
@@ -96,7 +97,7 @@ column still scores 1.0); the judge digest labels columns by their real name.
 
 **Objective correctness is gated on the result set, never on a judge.** `soft_f1` compares the
 predicted and gold result sets — both pre-computed and supplied in the data, so no database is touched
-at eval time (partial credit via cell-bag F1). The judge is confined to whether the NL `output`
+at eval time (partial credit via fact-bag F1 over `(column, value)` facts). The judge is confined to whether the NL `output`
 faithfully reports what the query returned, and it reads a **bounded statistical digest** of the
 result set (per-column aggregates + a small sample), never the raw rows, so it scales to any result
 size. Result-set comparison is explicit and configurable — `defaults.result_set_policy` controls row

@@ -46,12 +46,35 @@ def test_soft_f1_ignores_row_order_by_default():
     assert r.score == 1.0
 
 
-def test_soft_f1_graded_on_values_not_column_names():
-    # a paraphrase that aliases a column (name -> employee) keeps the same values -> still 1.0
-    pred = [{"employee": "Alice"}, {"employee": "Carol"}]
-    gold = [{"name": "Alice"}, {"name": "Carol"}]
+def test_soft_f1_missing_column_gives_partial_credit():
+    # the atomic-fact case: each cell is a (column, value) fact; omitting a whole column from every
+    # row costs recall but not precision -> 6 correct facts of 6 predicted, 8 gold -> F1 = 6/7
+    gold = [
+        {"date": 20251015, "day": "Thu", "alerts": 102, "downtime": 15},
+        {"date": 20251015, "day": "Thu", "alerts": 204, "downtime": 10},
+    ]
+    pred = [
+        {"date": 20251015, "day": "Thu", "alerts": 102},   # 'downtime' column omitted
+        {"date": 20251015, "day": "Thu", "alerts": 204},
+    ]
     r = SoftF1().score(_ctx(**{MetaKey.EXECUTION_RESULT: pred, MetaKey.GOLD_EXECUTION_RESULT: gold}))
-    assert r.score == 1.0
+    assert abs(r.score - 6 / 7) < 1e-9  # P=1.0, R=0.75 -> 2*1*0.75/1.75 = 0.857142...
+
+
+def test_soft_f1_facts_are_column_aware():
+    # each fact is (column, value): a value only counts under the SAME column, so an aliased/renamed
+    # column no longer matches...
+    aliased = SoftF1().score(_ctx(**{
+        MetaKey.EXECUTION_RESULT: [{"employee": "Alice"}, {"employee": "Carol"}],
+        MetaKey.GOLD_EXECUTION_RESULT: [{"name": "Alice"}, {"name": "Carol"}],
+    }))
+    assert aliased.score == 0.0
+    # ...and a value placed in the wrong column is not a true positive (a bare-value bag would give 1.0)
+    swapped = SoftF1().score(_ctx(**{
+        MetaKey.EXECUTION_RESULT: [{"alerts": 15, "downtime": 102}],
+        MetaKey.GOLD_EXECUTION_RESULT: [{"alerts": 102, "downtime": 15}],
+    }))
+    assert swapped.score == 0.0
 
 
 def test_soft_f1_disjoint_results_score_zero():
@@ -80,10 +103,10 @@ def test_soft_f1_coerces_json_string_result_set():
 
 
 def test_soft_f1_coerces_positional_and_scalar_rows():
-    # positional cells -> {"col1": ...}; a bare scalar row -> {"col1": scalar}; values still match
+    # positional cells -> {"col1": ...}; a bare scalar row -> {"col1": scalar}; same column -> match
     r = SoftF1().score(_ctx(**{
         MetaKey.EXECUTION_RESULT: [["Alice"], "Bob"],            # a list row and a scalar row
-        MetaKey.GOLD_EXECUTION_RESULT: [{"x": "Alice"}, {"y": "Bob"}],
+        MetaKey.GOLD_EXECUTION_RESULT: [["Alice"], ["Bob"]],
     }))
     assert r.error is None and r.score == 1.0
 

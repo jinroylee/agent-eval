@@ -15,7 +15,7 @@ executed at eval time**. The predicted result set is supplied by the agent's own
 ``dict[str, Any]`` per row** (``column -> value``); loosely-typed encodings (a JSON string, a single
 unwrapped row, or positional cells) are coerced to that shape on read (see ``_coerce_rows``).
 ``soft_f1`` compares those two row-sets (partial credit via
-cell-bag F1); the judge is confined to whether the natural-language ``output`` faithfully reports the
+fact-bag F1 over ``(column, value)`` facts); the judge is confined to whether the ``output`` reports the
 predicted result set — and it reads a **bounded statistical digest** of that set (per-column
 aggregates over every row + a small sample; see ``_digest_lines``), never the raw rows, so the prompt
 stays small no matter how large the result is. Result-set comparison semantics (row order, duplicates,
@@ -263,12 +263,14 @@ def _digest_lines(
 
 # --------------------------------------------------------------------------- result-set correctness (GT)
 class SoftF1(BaseMetric):
-    """Cell-bag F1 between the predicted and gold **result sets** (graded partial credit).
+    """Fact-bag F1 between the predicted and gold **result sets** (graded partial credit).
 
     Both result sets are supplied in the data — no query is executed here: the predicted rows in
     ``metadata['execution_result']`` and the gold rows in ``metadata['gold_execution_result']``, each
-    an array of ``dict[str, Any]`` rows. Grading is over the multiset of cell *values* (column names
-    need not match), so a paraphrase that aliases a column still scores 1.0.
+    an array of ``dict[str, Any]`` rows. Every cell is one atomic ``(column, value)`` fact and the
+    score is the F1 of the predicted fact multiset vs the gold one — a value only earns credit under
+    the **same column**, so an omitted column costs recall and an aliased/renamed column no longer
+    matches. Row order and duplicate rows wash out; ``float_tolerance`` still merges near-equal numbers.
     """
 
     name = "soft_f1"

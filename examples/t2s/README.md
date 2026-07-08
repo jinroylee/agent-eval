@@ -44,20 +44,21 @@ Expected:
 ```
 === t2s/correctness  dataset=predictions  n=12 ===
 soft_f1                    0.962        [0.888, 1.000]      0.80  PASS
-component_match            0.931        [0.837, 1.000]         -  info
+component_match            0.958        [0.877, 1.000]         -  info
 ast_valid                  1.000        [0.758, 1.000]      0.95  PASS
 VERDICT: PASS
 
 === t2s/response  dataset=predictions  n=12 ===
-t2s_faithfulness           0.423        [0.337, 0.509]         -  info
-t2s_consistency            0.423        [0.337, 0.509]         -  info
+t2s_faithfulness           0.650        [0.581, 0.719]         -  info
+t2s_consistency            0.650        [0.581, 0.719]         -  info
 llm_judge                  0.500        [0.500, 0.500]         -  info
 ```
 
 This example is built to show the **division of labor** between metrics. The agent deliberately:
 
-- **paraphrases** two queries (aliased aggregates) → the same result set, so `soft_f1` stays 1.0, but
-  the AST differs so `component_match` dips below 1.0;
+- **qualifies a column** on one query (`e.name` vs gold `name`) → the same result set, so `soft_f1`
+  stays 1.0 (it grades `(column, value)` facts and sqlite still names the column `name`), but the
+  projection *text* differs so `component_match` dips below 1.0;
 - **drops a `WHERE` filter** on one query → it still parses (`ast_valid` = 1.0) but returns the wrong
   rows (`soft_f1` < 1.0). Its NL answer faithfully reports its *own* (wrong) result, so
   `t2s_faithfulness` doesn't flag it — `soft_f1` does. Correctness and groundedness are separate

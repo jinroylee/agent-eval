@@ -3,8 +3,10 @@
 Deterministic (a question→SQL lookup, then it runs the query and summarizes the rows) so the example
 needs no LLM. A couple of its queries are deliberately imperfect to show what each metric catches:
 
-- ``q05``/``q03`` are paraphrases of the gold SQL (different aliases): same *results* (soft_f1 = 1.0)
-  but different *AST* (component_match < 1.0).
+- ``q06`` qualifies a column (``e.name`` vs gold ``name``): identical *results* (soft_f1 = 1.0) but
+  different projection *text* (component_match < 1.0). soft_f1 grades ``(column, value)`` facts over
+  the result set, and sqlite names the column ``name`` either way, so the fact still matches — an
+  *aliased/renamed* result column, by contrast, would lower soft_f1.
 - ``q08`` drops a ``WHERE`` filter: it still parses (ast_valid = 1.0) but returns the wrong rows
   (soft_f1 < 1.0). Its NL answer faithfully reports *its own* (wrong) result — so t2s_faithfulness
   stays high while soft_f1 flags the error. That's the intended division of labor.
@@ -35,14 +37,14 @@ PRED_SQL = {
     "Names of employees in the Engineering department.":
         "SELECT e.name FROM employee e JOIN department d ON e.dept_id = d.dept_id "
         "WHERE d.name = 'Engineering'",
-    # paraphrase: aliased aggregate -> same results, different AST projection
     "Number of employees in each department, by department name.":
-        "SELECT d.name, COUNT(*) AS headcount FROM employee e JOIN department d "
+        "SELECT d.name, COUNT(*) FROM employee e JOIN department d "
         "ON e.dept_id = d.dept_id GROUP BY d.name",
     "Total salary paid in each department id.": "SELECT dept_id, SUM(salary) FROM employee GROUP BY dept_id",
-    # paraphrase: aliased aggregate
-    "Average salary across all employees.": "SELECT AVG(salary) AS avg_salary FROM employee",
-    "Names of employees who have no manager.": "SELECT name FROM employee WHERE manager_id IS NULL",
+    "Average salary across all employees.": "SELECT AVG(salary) FROM employee",
+    # table-qualified projection: identical results (soft_f1 = 1.0, sqlite still names the column
+    # `name`) but different projection *text* -> component_match < 1.0
+    "Names of employees who have no manager.": "SELECT e.name FROM employee e WHERE e.manager_id IS NULL",
     "The name of the department with the highest budget.":
         "SELECT name FROM department ORDER BY budget DESC LIMIT 1",
     # deliberate bug: dropped the WHERE filter -> parses fine but wrong rows

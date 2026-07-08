@@ -91,11 +91,30 @@ def _dedup_keep_order(rows: list[tuple]) -> list[tuple]:
     return out
 
 
+def _facts(row: Row) -> list[tuple]:
+    """The ``(column, value)`` *facts* of one row — the atomic units ``soft_f1`` counts.
+
+    Column identity comes from the dict key for canonical rows; a positional row falls back to the
+    cell index. Either way a value is only ever credited under the column it actually appears in.
+    """
+    if isinstance(row, Mapping):
+        return [(str(k), v) for k, v in row.items()]
+    return [(str(i), v) for i, v in enumerate(row)]
+
+
 def soft_f1(rows_pred: Sequence[Row], rows_gold: Sequence[Row], policy: ResultSetPolicy) -> float:
-    """Cell-bag F1: partial credit for overlapping cell values (graded secondary metric)."""
+    """Fact-bag F1: partial credit for matching ``(column, value)`` facts across the result sets.
+
+    Every cell is one atomic *fact* — a ``(column, normalized value)`` pair — and the score is the F1
+    of the predicted fact multiset against the gold one. A true positive is a fact present in both (the
+    same value **under the same column**), so precision drops on extra/wrong facts and recall on missing
+    ones (e.g. an omitted column costs recall). Row order and duplicate rows wash out (it is a
+    multiset); ``float_tolerance`` still merges near-equal numbers. Column identity is significant here:
+    an aliased/renamed column no longer matches (unlike a bare value bag).
+    """
     ndigits = _ndigits(policy.float_tolerance)
-    pred = Counter(_norm_cell(c, ndigits) for row in rows_pred for c in _cells(row))
-    gold = Counter(_norm_cell(c, ndigits) for row in rows_gold for c in _cells(row))
+    pred = Counter((c, _norm_cell(v, ndigits)) for row in rows_pred for c, v in _facts(row))
+    gold = Counter((c, _norm_cell(v, ndigits)) for row in rows_gold for c, v in _facts(row))
     if not pred and not gold:
         return 1.0
     if not pred or not gold:
