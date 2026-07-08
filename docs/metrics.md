@@ -79,6 +79,13 @@ result set is supplied by the agent's own state in `metadata['execution_result']
 set is stored in the dataset in `metadata['gold_execution_result']`. The final natural-language answer
 is `output`.
 
+Each result set is canonically an **array of rows, one `dict[str, Any]` per row** (`column -> value`),
+e.g. `[{"name": "Alice", "dept": "Engineering"}, ...]`. Loosely-typed encodings are coerced to that
+shape on read rather than rejected — a whole set stored as a JSON *string* is parsed, a single
+unwrapped row `dict` is wrapped, and positional/scalar rows are named `col1, col2, …`. `soft_f1` grades
+the multiset of cell *values*, so column names need not match between predicted and gold (an aliased
+column still scores 1.0); the judge digest labels columns by their real name.
+
 | metric | GT? | reads | agg | what |
 |---|---|---|---|---|
 | `soft_f1` | yes | `metadata['execution_result']`, `metadata['gold_execution_result']` | mean | cell-F1 of the predicted vs gold result sets (the **correctness gate**) |

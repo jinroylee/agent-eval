@@ -59,9 +59,20 @@ PRED_SQL = {
 class T2SState(TypedDict, total=False):
     input: str  # the natural-language question
     sql: str  # the generated SQL
-    execution_result: list  # the rows the query returned (captured here at predict time)
+    execution_result: list[dict]  # the rows the query returned ({column: value} dicts, at predict time)
     output: str  # the final natural-language answer
     tokens: int
+
+
+def _unique_columns(names: list[str]) -> list[str]:
+    """De-duplicate column names so each row maps cleanly to a dict. SQL may repeat a name (e.g. two
+    ``name`` columns from a join): the second ``name`` becomes ``name_2``, the third ``name_3``, ..."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+        out.append(n if seen[n] == 1 else f"{n}_{seen[n]}")
+    return out
 
 
 def generate_sql_node(state: T2SState) -> dict:
@@ -75,6 +86,7 @@ def answer_node(state: T2SState) -> dict:
     try:
         con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         cur = con.execute(sql)
+        columns = _unique_columns([d[0] for d in cur.description])
         rows = cur.fetchall()
         con.close()
     except Exception as exc:
@@ -87,10 +99,10 @@ def answer_node(state: T2SState) -> dict:
     else:
         preview = "; ".join(", ".join("NULL" if c is None else str(c) for c in r) for r in rows[:10])
         answer = f"The query returned {len(rows)} row(s): {preview}."
-    # Capture the result rows so evaluation can score them without re-running the query.
+    # Capture the result rows as {column: value} dicts so evaluation can score them without re-running.
     return {
         "output": answer,
-        "execution_result": [list(r) for r in rows],
+        "execution_result": [dict(zip(columns, r, strict=True)) for r in rows],
         "tokens": len(sql.split()) + len(answer.split()),
     }
 

@@ -9,10 +9,22 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-Row = Sequence
+Row = Sequence | Mapping
+
+
+def _cells(row: Row) -> list:
+    """The ordered cell *values* of one row, whichever shape it arrives in.
+
+    Result sets reach us two ways: the T2S metrics pass canonical ``dict`` rows (``column -> value``),
+    while the execution harness passes positional tuples. Comparison here is value-based (column
+    identity is handled by ``column_order``), so we reduce both shapes to their list of cell values.
+    """
+    if isinstance(row, Mapping):
+        return list(row.values())
+    return list(row)
 
 
 @dataclass(frozen=True)
@@ -46,7 +58,7 @@ def _sort_key(cell):
 
 
 def _norm_row(row: Row, policy: ResultSetPolicy, ndigits: int | None) -> tuple:
-    cells = [_norm_cell(c, ndigits) for c in row]
+    cells = [_norm_cell(c, ndigits) for c in _cells(row)]
     if policy.column_order == "ignore":
         cells = sorted(cells, key=_sort_key)
     return tuple(cells)
@@ -82,8 +94,8 @@ def _dedup_keep_order(rows: list[tuple]) -> list[tuple]:
 def soft_f1(rows_pred: Sequence[Row], rows_gold: Sequence[Row], policy: ResultSetPolicy) -> float:
     """Cell-bag F1: partial credit for overlapping cell values (graded secondary metric)."""
     ndigits = _ndigits(policy.float_tolerance)
-    pred = Counter(_norm_cell(c, ndigits) for row in rows_pred for c in row)
-    gold = Counter(_norm_cell(c, ndigits) for row in rows_gold for c in row)
+    pred = Counter(_norm_cell(c, ndigits) for row in rows_pred for c in _cells(row))
+    gold = Counter(_norm_cell(c, ndigits) for row in rows_gold for c in _cells(row))
     if not pred and not gold:
         return 1.0
     if not pred or not gold:

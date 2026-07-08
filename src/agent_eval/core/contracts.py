@@ -48,8 +48,8 @@ class MetaKey:
     SQL = "sql"  # T2S: the SQL the agent generated
     GOLD_SQL = "gold_sql"  # T2S: the gold SQL (GT)
     DB_REF = "db_ref"  # T2S: path/URI of a database (used at data-prep/predict time, not at eval time)
-    EXECUTION_RESULT = "execution_result"  # T2S: the predicted SQL's result set (rows), from the graph state
-    GOLD_EXECUTION_RESULT = "gold_execution_result"  # T2S: the gold SQL's result set (rows), from the dataset (GT)
+    EXECUTION_RESULT = "execution_result"  # T2S: predicted result set — list[dict[str, Any]] rows (state)
+    GOLD_EXECUTION_RESULT = "gold_execution_result"  # T2S: gold result set — list[dict[str, Any]] rows (GT)
     LATENCY_MS = "latency_ms"  # perf: wall-clock of the run (auto-filled by the harness)
     TOKENS = "tokens"  # perf: tokens spent on the run (filled by the harness if available)
     CLUSTER_ID = "cluster_id"  # stats: group id for non-iid items (widens the CI)

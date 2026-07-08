@@ -11,17 +11,26 @@
 Objective correctness is graded on the **result set** the query produced — but the query is **not
 executed at eval time**. The predicted result set is supplied by the agent's own state
 (``metadata['execution_result']``) and the gold result set is stored in the dataset
-(``metadata['gold_execution_result']``). ``soft_f1`` compares those two row-sets (partial credit via
+(``metadata['gold_execution_result']``). Each result set is canonically an **array of rows, one
+``dict[str, Any]`` per row** (``column -> value``); loosely-typed encodings (a JSON string, a single
+unwrapped row, or positional cells) are coerced to that shape on read (see ``_coerce_rows``).
+``soft_f1`` compares those two row-sets (partial credit via
 cell-bag F1); the judge is confined to whether the natural-language ``output`` faithfully reports the
 predicted result set — and it reads a **bounded statistical digest** of that set (per-column
 aggregates over every row + a small sample; see ``_digest_lines``), never the raw rows, so the prompt
 stays small no matter how large the result is. Result-set comparison semantics (row order, duplicates,
 NULLs, float tolerance) are explicit via ``defaults.result_set_policy``. The AST metrics
-(``component_match``, ``ast_valid``)
-parse the SQL text and need the ``[t2s]`` extra (``sqlglot``).
+(``component_match``, ``ast_valid``) parse the SQL text and need the ``[t2s]`` extra (``sqlglot``);
+they first normalize escaped-whitespace artifacts from raw data (a literal ``\n``, ``\\n``, ``\t``)
+that would otherwise make sqlglot choke on a stray backslash (see ``_clean_sql``).
 """
 
 from __future__ import annotations
+
+import json
+import re
+from collections.abc import Mapping
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -41,38 +50,88 @@ _MAX_COLUMNS = 20  # cap on columns summarized (wide result sets)
 
 
 # --------------------------------------------------------------------------- helpers
+# Raw-data SQL often carries *literal* escaped-whitespace artifacts — a backslash-n (``\n``), ``\\n``,
+# ``\r``, ``\t`` — left over from JSON/CSV encoding. Outside a string literal, sqlglot cannot tokenize
+# the stray backslash and fails with "Unexpected token". We fold any run of backslashes before an
+# ``n``/``r``/``t`` escape into a single space so the *structure* parses; the AST metrics only look at
+# tables/projections/validity, so string-literal content does not matter. (Real newlines/tabs and
+# backslashes *inside* string literals already parse, so they are left untouched.)
+_ESCAPED_WS = re.compile(r"\\+[nrt]")
+
+
+def _clean_sql(text: object) -> str:
+    """Normalize escaped-whitespace artifacts out of raw SQL so sqlglot can parse its structure."""
+    return _ESCAPED_WS.sub(" ", str(text)).strip()
+
+
 def _sql(ctx: EvalContext) -> str:
     sql = ctx.metadata.get(MetaKey.SQL)
     if not sql:
         raise ValueError("metadata['sql'] (the generated SQL) is required")
-    return str(sql)
+    return _clean_sql(sql)
 
 
 def _gold_sql(ctx: EvalContext) -> str:
     sql = ctx.metadata.get(MetaKey.GOLD_SQL)
     if not sql:
         raise ValueError("metadata['gold_sql'] (the gold SQL) is required")
-    return str(sql)
+    return _clean_sql(sql)
 
 
-def _rows(value) -> list[tuple]:
-    """Coerce a stored result set into a list of row tuples (a bare scalar becomes a 1-cell row)."""
-    return [tuple(row) if isinstance(row, (list, tuple)) else (row,) for row in value]
+# The strict canonical type of a stored result set: an array of rows, each a ``column -> value`` map.
+ResultRow = dict[str, Any]
+ResultSet = list[ResultRow]
 
 
-def _result(ctx: EvalContext) -> list[tuple]:
+def _coerce_row(row: Any) -> ResultRow:
+    """Coerce a single row into the canonical ``dict[str, Any]`` (``column -> value``).
+
+    Accepts the canonical mapping as-is; casts the two common incompatible encodings rather than
+    erroring — positional cells (``["Alice", 30]``) become ``{"col1": "Alice", "col2": 30}`` and a
+    bare scalar becomes a one-column row ``{"col1": value}``.
+    """
+    if isinstance(row, Mapping):
+        return {str(k): v for k, v in row.items()}
+    if isinstance(row, (list, tuple)):
+        return {f"col{i}": cell for i, cell in enumerate(row, start=1)}
+    return {"col1": row}
+
+
+def _coerce_rows(value: Any, field: str) -> ResultSet:
+    """Coerce a stored result set to the strict canonical type ``list[dict[str, Any]]``.
+
+    The metrics require rows of ``column -> value``; incompatible-but-recoverable encodings are cast
+    with native Python rather than rejected: a whole set stored as a JSON *string* is parsed, a single
+    unwrapped row ``dict`` is wrapped in a list, and positional/scalar rows are named (see
+    :func:`_coerce_row`). Anything that still is not a list of rows is a genuine data error.
+    """
+    if isinstance(value, str):  # the whole set arrived as JSON text (e.g. a stringly-typed store)
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"metadata['{field}'] is a string but not valid JSON: {exc}") from exc
+    if isinstance(value, Mapping):  # a single row handed over without the enclosing list
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"metadata['{field}'] must be a list of rows (dict[str, Any]); got {type(value).__name__}"
+        )
+    return [_coerce_row(row) for row in value]
+
+
+def _result(ctx: EvalContext) -> ResultSet:
     # An empty result set ([]) is valid; only a genuinely absent one (None) is an error.
     rows = ctx.metadata.get(MetaKey.EXECUTION_RESULT)
     if rows is None:
         raise ValueError("metadata['execution_result'] (the predicted SQL's result rows) is required")
-    return _rows(rows)
+    return _coerce_rows(rows, "execution_result")
 
 
-def _gold_result(ctx: EvalContext) -> list[tuple]:
+def _gold_result(ctx: EvalContext) -> ResultSet:
     rows = ctx.metadata.get(MetaKey.GOLD_EXECUTION_RESULT)
     if rows is None:
         raise ValueError("metadata['gold_execution_result'] (the gold SQL's result rows) is required")
-    return _rows(rows)
+    return _coerce_rows(rows, "gold_execution_result")
 
 
 def _policy(arg) -> ResultSetPolicy:
@@ -125,7 +184,7 @@ def _distinct(values: list) -> list:
     return out
 
 
-def _column_summary(idx: int, cells: list, max_distinct: int) -> str:
+def _column_summary(name: str, cells: list, max_distinct: int) -> str:
     """One line summarizing a column: type, counts, and either aggregates or enumerated values."""
     non_null = [c for c in cells if c is not None]
     n_null = len(cells) - len(non_null)
@@ -152,11 +211,23 @@ def _column_summary(idx: int, cells: list, max_distinct: int) -> str:
                    vals + (f" (+{more} more)" if more > 0 else "")]
     if n_null:
         fields.append(f"nulls={n_null}")
-    return f"Column {idx + 1}: " + ", ".join(fields)
+    return f"Column {name!r}: " + ", ".join(fields)
+
+
+def _columns(rows: ResultSet) -> list[str]:
+    """Ordered union of column names across rows (first-seen order; rows may be ragged)."""
+    seen: set[str] = set()
+    cols: list[str] = []
+    for row in rows:
+        for name in row:
+            if name not in seen:
+                seen.add(name)
+                cols.append(name)
+    return cols
 
 
 def _digest_lines(
-    rows: list[tuple],
+    rows: ResultSet,
     *,
     sample_rows: int = _SAMPLE_ROWS,
     max_distinct: int = _MAX_DISTINCT,
@@ -167,25 +238,26 @@ def _digest_lines(
     Instead of dumping (a truncated prefix of) the rows — which fails silently once the answer refers
     to a value past the cutoff — we summarize the *whole* set: per-column aggregates computed over
     every row, distinct values when few, and a small verbatim sample. The output size is O(columns),
-    so it stays small whether the query returned 8 rows or 8 million.
+    so it stays small whether the query returned 8 rows or 8 million. Rows are canonicalized to
+    ``dict[str, Any]`` first, so columns are summarized under their real names.
     """
+    rows = _coerce_rows(rows, "execution_result")
     if not rows:
         return ["(empty result set)"]
-    n_rows = len(rows)
-    n_cols = max(len(r) for r in rows)
+    cols = _columns(rows)
+    n_rows, n_cols = len(rows), len(cols)
     if n_rows == 1 and n_cols == 1:
-        return [f"Result digest — single value: {_cell(rows[0][0])}"]
+        return [f"Result digest — single value: {_cell(rows[0][cols[0]])}"]
 
     lines = [f"Result digest — full set: {n_rows} row(s), {n_cols} column(s) (summary, not raw rows)."]
-    shown_cols = min(n_cols, max_columns)
-    for idx in range(shown_cols):
-        lines.append(_column_summary(idx, [r[idx] if idx < len(r) else None for r in rows], max_distinct))
+    for name in cols[:max_columns]:
+        lines.append(_column_summary(name, [row.get(name) for row in rows], max_distinct))
     if n_cols > max_columns:
         lines.append(f"... (+{n_cols - max_columns} more columns)")
 
     k = min(sample_rows, n_rows)
     lines.append(f"Sample rows (first {k} of {n_rows}):")
-    lines += ["  " + " | ".join(_cell(c) for c in r) for r in rows[:k]]
+    lines += ["  " + " | ".join(_cell(row.get(c)) for c in cols) for row in rows[:k]]
     return lines
 
 
@@ -194,7 +266,9 @@ class SoftF1(BaseMetric):
     """Cell-bag F1 between the predicted and gold **result sets** (graded partial credit).
 
     Both result sets are supplied in the data — no query is executed here: the predicted rows in
-    ``metadata['execution_result']`` and the gold rows in ``metadata['gold_execution_result']``.
+    ``metadata['execution_result']`` and the gold rows in ``metadata['gold_execution_result']``, each
+    an array of ``dict[str, Any]`` rows. Grading is over the multiset of cell *values* (column names
+    need not match), so a paraphrase that aliases a column still scores 1.0.
     """
 
     name = "soft_f1"

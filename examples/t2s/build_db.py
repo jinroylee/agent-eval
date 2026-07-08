@@ -83,10 +83,22 @@ def build_db(path: str | os.PathLike = DB_PATH) -> str:
     return str(path)
 
 
-def _execute(con: sqlite3.Connection, sql: str) -> list[list]:
-    """Run a query and return its rows as a list of lists (JSON-friendly)."""
+def _unique_columns(names: list[str]) -> list[str]:
+    """De-duplicate column names so each row maps cleanly to a dict. SQL may repeat a name (e.g. two
+    ``name`` columns from a join): the second ``name`` becomes ``name_2``, the third ``name_3``, ..."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+        out.append(n if seen[n] == 1 else f"{n}_{seen[n]}")
+    return out
+
+
+def _execute(con: sqlite3.Connection, sql: str) -> list[dict]:
+    """Run a query and return its rows as a list of ``{column: value}`` dicts (JSON-friendly)."""
     cur = con.execute(sql)
-    return [list(row) for row in cur.fetchall()]
+    columns = _unique_columns([d[0] for d in cur.description])
+    return [dict(zip(columns, row, strict=True)) for row in cur.fetchall()]
 
 
 def write_gold(path: str | os.PathLike = GOLD_PATH, db_path: str | os.PathLike = DB_PATH) -> str:
