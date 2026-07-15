@@ -23,6 +23,7 @@ prediction:
   source: gold
   target: predictions
   input_key: input
+  n_runs: 3                               # repeated runs -> metadata['repeated_sql'] (t2s_consistency)
   generate_csv: true                      # also write predictions.csv for easy monitoring
   state_map:                              # canonical field <- agent state key
     sql: sql                              #   generated SQL -> metadata['sql']

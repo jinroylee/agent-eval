@@ -23,14 +23,17 @@ it which state keys map onto the canonical fields the metrics read, via the conf
 
 | canonical field | where it goes | read by |
 |---|---|---|
-| `output` | `EvalContext.output` | `llm_judge`, `bertscore`, `faithfulness`, `consistency`, `t2s_*` |
-| `retrieved_context` | `EvalContext.retrieved_context` | `faithfulness`, `consistency` |
+| `output` | `EvalContext.output` | `llm_judge`, `bertscore`, `faithfulness`, `t2s_faithfulness` |
+| `retrieved_context` | `EvalContext.retrieved_context` | `faithfulness` |
 | `retrieved_ids` | `metadata['retrieved_ids']` | `recall_at_k`, `precision_at_k`, `ndcg_at_k` |
 | `sql` | `metadata['sql']` | `soft_f1`, `component_match`, `ast_valid`, `t2s_*` |
 | `tokens` | `metadata['tokens']` | `token_usage` |
 
 `latency_ms` is filled automatically (the harness times each run). Anything not in the canonical set
-lands in `metadata` under its own name. The full field reference is in [metrics.md](metrics.md).
+lands in `metadata` under its own name. With `prediction.n_runs > 1` the harness runs the graph N
+times per input and stores the repeated generations in `metadata['repeated_outputs']` /
+`['repeated_sql']` — that is what the self-consistency metrics (`consistency`, `t2s_consistency`)
+read. The full field reference is in [metrics.md](metrics.md).
 
 Expose whatever a metric needs as a key in your graph's state. For example, a RAG agent should put
 the ranked ids it retrieved and the chunk texts into its state so retrieval and groundedness can be
@@ -43,7 +46,7 @@ from langgraph.graph import StateGraph, START, END
 class RagState(TypedDict, total=False):
     input: str                    # the question (the harness sets this)
     retrieved_ids: list[str]      # ranked doc ids   → recall/precision/ndcg
-    retrieved_context: list[str]  # chunk texts      → faithfulness/consistency
+    retrieved_context: list[str]  # chunk texts      → faithfulness
     output: str                   # the final answer → llm_judge
     tokens: int
 
@@ -85,6 +88,7 @@ prediction:
     retrieved_ids: retrieved_ids
     retrieved_context: retrieved_context
     output: output
+  n_runs: 3                     # repeated runs → metadata['repeated_outputs'] (consistency)
 
 suites:
   retrieval:

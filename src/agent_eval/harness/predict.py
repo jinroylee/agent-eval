@@ -10,7 +10,9 @@ The workflow the examples follow:
 
 This is the one place the **required LangGraph state fields** are made concrete: ``state_map`` maps
 canonical field -> the key your graph state exposes it under (e.g. ``output: answer``,
-``sql: generated_sql``, ``retrieved_ids: doc_ids``). ``latency_ms`` is filled automatically.
+``sql: generated_sql``, ``retrieved_ids: doc_ids``). ``latency_ms`` is filled automatically. With
+``n_runs > 1`` the graph runs N times per input and the repeated generations land in
+``metadata['repeated_outputs']`` / ``['repeated_sql']`` for the self-consistency metrics.
 """
 
 from __future__ import annotations
@@ -65,12 +67,24 @@ def predict(cfg: ConfigModel) -> list[dict]:
         canonical = to_canonical(gold, source_spec.field_map, source_spec.include_unmapped)
         final_state, latency_ms = run_once(graph, canonical.get("input"), pred.input_key)
 
-        predicted = to_canonical(final_state, pred.state_map, include_unmapped=False)
+        projections = [to_canonical(final_state, pred.state_map, include_unmapped=False)]
+        for _ in range(pred.n_runs - 1):  # repeated runs feed the self-consistency metrics
+            extra_state, _ = run_once(graph, canonical.get("input"), pred.input_key)
+            projections.append(to_canonical(extra_state, pred.state_map, include_unmapped=False))
+
+        predicted = projections[0]  # run 1 stays the canonical prediction (fields + latency)
         for fld in CONTEXT_FIELDS:
             if fld in predicted:
                 canonical[fld] = predicted[fld]
         canonical["metadata"].update(predicted["metadata"])
         canonical["metadata"].setdefault(MetaKey.LATENCY_MS, latency_ms)
+        if pred.n_runs > 1:
+            if "output" in pred.state_map:
+                canonical["metadata"][MetaKey.REPEATED_OUTPUTS] = [p.get("output") for p in projections]
+            if "sql" in pred.state_map:
+                canonical["metadata"][MetaKey.REPEATED_SQL] = [
+                    p["metadata"].get(MetaKey.SQL) for p in projections
+                ]
         out.append(canonical)
 
     target_spec = build_dataset_spec(cfg, pred.target)

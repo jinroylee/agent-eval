@@ -38,6 +38,8 @@ prediction:                      # `agent-eval predict`가 예측을 채우는 �
   source: gold                   # 에이전트를 실행할 입력 데이터셋
   target: predictions            # 예측을 기록할 데이터셋 (반드시 jsonl)
   input_key: input               # 질문이 전달되는 그래프 상태 키
+  n_runs: 1                      # >1이면 같은 입력으로 그래프를 N번 실행해 반복 생성 결과를 저장한다
+                                 #     (repeated_outputs / repeated_sql — 자기일관성 메트릭용)
   state_map:                     # 표준 필드 <- 그래프 최종 상태 키
     output: output
     retrieved_ids: retrieved_ids

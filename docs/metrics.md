@@ -62,11 +62,13 @@ returned (best first), `metadata['relevant_ids']` is the gold set. `k` is fixed 
 | `precision_at_k` | yes | same | mean | fraction of the top-k that are relevant |
 | `ndcg_at_k` | yes | same (+ `metadata['relevance']` for graded gains) | mean | rank-weighted relevance |
 | `faithfulness` | no | `retrieved_context`, `output` | mean | is every claim supported by the retrieved chunks? |
-| `consistency` | no | `retrieved_context`, `output` | mean | does the answer avoid contradicting the chunks? |
+| `consistency` | no | `metadata['repeated_outputs']` (+ `input`) | mean | do repeated runs of the same query give the same answer? |
 
-`recall_at_k` caps everything downstream, so it's the usual hard gate. `faithfulness` (claims must be
-*supported*) and `consistency` (claims must not *contradict*) are judge-based — distinct rubrics, both
-reading the retrieved chunk texts in `retrieved_context`. `ndcg_at_k` uses binary relevance by
+`recall_at_k` caps everything downstream, so it's the usual hard gate. `faithfulness` (every claim
+must be *supported* by the retrieved chunks) is judge-based against the evidence. `consistency` is
+judge-based **across repeated runs**: run the same query N times (`prediction.n_runs`) and every
+pair of answers is judged for agreement — the score is the pairwise mean, at N(N−1)/2 judge calls
+per query. `ndcg_at_k` uses binary relevance by
 default; pass `metadata['relevance']` (`{id: gain}`) for graded relevance.
 
 ---
@@ -93,7 +95,7 @@ longer matches (column identity is significant). The judge digest labels columns
 | `component_match` | yes | `metadata['sql']`, `metadata['gold_sql']` | mean | AST overlap (tables + projections) — diagnostic |
 | `ast_valid` | no | `metadata['sql']` | rate | does the SQL parse? |
 | `t2s_faithfulness` | no | `metadata['execution_result']`, `output` | mean | does the NL answer report the query result faithfully? |
-| `t2s_consistency` | no | `metadata['execution_result']`, `output` | mean | does the NL answer avoid contradicting the result? |
+| `t2s_consistency` | no | `metadata['repeated_sql']` (+ `input`) | mean | do repeated runs of the same query generate equivalent SQL? |
 
 **Objective correctness is gated on the result set, never on a judge.** `soft_f1` compares the
 predicted and gold result sets — both pre-computed and supplied in the data, so no database is touched
@@ -102,8 +104,9 @@ faithfully reports what the query returned, and it reads a **bounded statistical
 result set (per-column aggregates + a small sample), never the raw rows, so it scales to any result
 size. Result-set comparison is explicit and configurable — `defaults.result_set_policy` controls row
 order, duplicates, NULLs, and float tolerance (the documented silent-failure source for execution
-metrics). Params: `soft_f1` takes `result_policy`; `component_match` / `ast_valid` take `dialect`; the
-judge metrics take `sample_rows` / `max_distinct` / `max_columns`.
+metrics). Params: `soft_f1` takes `result_policy`; `component_match` / `ast_valid` take `dialect`;
+`t2s_faithfulness` takes `sample_rows` / `max_distinct` / `max_columns` (`t2s_consistency`
+takes none — it compares the repeated SQLs pairwise).
 
 > The T2S example ([`examples/t2s`](../examples/t2s/)) is built to show the division of labor:
 > a paraphrased query keeps `soft_f1` at 1.0 while `component_match` dips; a dropped `WHERE` keeps
@@ -113,7 +116,9 @@ judge metrics take `sample_rows` / `max_distinct` / `max_columns`.
 
 ## A note on the "consistency" naming
 
-The final metric set lists *consistency* under both RAG and T2S. They share the idea (the answer must
-not contradict the evidence) but read different evidence, so the registry exposes them under distinct
-type names: `consistency` (RAG, evidence = retrieved chunks) and `t2s_consistency` (T2S, evidence =
-the query's result set, as a bounded digest). Same for `faithfulness` / `t2s_faithfulness`.
+The final metric set lists *consistency* under both RAG and T2S. Both measure **self-consistency
+across repeated runs of the same query** (fill the runs via `prediction.n_runs`); they differ in
+*what* is compared — final answers (`metadata['repeated_outputs']`) vs generated SQL
+(`metadata['repeated_sql']`) — so the registry exposes them under distinct type names:
+`consistency` (RAG) and `t2s_consistency` (T2S). Same for `faithfulness` / `t2s_faithfulness`
+(which keep their evidence-grounding semantics: retrieved chunks / the result-set digest).

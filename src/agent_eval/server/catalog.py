@@ -64,7 +64,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     ),
     EndpointSpec(
         family="rag", name="consistency", type="consistency",
-        requires=("output", "retrieved_context"), judge_based=True,
+        optional=("input",), metadata_keys=("repeated_outputs",), judge_based=True,
     ),
     EndpointSpec(
         family="t2s", name="soft_f1", type="soft_f1",
@@ -86,8 +86,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     ),
     EndpointSpec(
         family="t2s", name="consistency", type="t2s_consistency",
-        requires=("output",), optional=("input",), metadata_keys=("execution_result",),
-        params=("sample_rows", "max_distinct", "max_columns"), judge_based=True, extra="t2s",
+        optional=("input",), metadata_keys=("repeated_sql",), judge_based=True, extra="t2s",
     ),
 )
 

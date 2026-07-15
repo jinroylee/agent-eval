@@ -21,6 +21,7 @@ prediction:
   source: gold
   target: predictions
   input_key: input
+  n_runs: 3                               # repeated runs -> metadata['repeated_outputs'] (consistency)
   generate_csv: true                      # also write predictions.csv for easy monitoring
   state_map:                              # canonical field <- agent state key
     retrieved_ids: retrieved_ids          #   ranked ids -> metadata['retrieved_ids']

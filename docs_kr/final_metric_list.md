@@ -46,8 +46,7 @@
 - consistency
     - non-GT
     - 필요 필드:
-        - 검색된 청크(Retrieved Chunks)
-        - 최종 응답
+        - 반복 실행된 최종 응답들(같은 질문, N회 실행)
 
 ## 3. T2S
 
@@ -71,5 +70,4 @@
 - consistency
     - non-GT
     - 필요 필드:
-        - 실행 결과(Execution Result)
-        - 최종 응답
+        - 반복 생성된 SQL들(같은 질문, N회 실행)

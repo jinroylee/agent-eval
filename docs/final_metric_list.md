@@ -46,8 +46,7 @@
 - consistency
     - non-GT
     - Required fields:
-        - Retrieved Chunks
-        - Final Response
+        - Repeated Final Responses (same query, N runs)
 
 ## 3. T2S
 
@@ -71,5 +70,4 @@
 - consistency
     - non-GT
     - Required fields:
-        - Execution Result
-        - Final Response
+        - Repeated Generated SQL (same query, N runs)

@@ -15,6 +15,7 @@ to a deterministic token-overlap stub so examples run offline). This module also
 from __future__ import annotations
 
 from collections.abc import Sequence
+from itertools import combinations
 
 from agent_eval.core.contracts import Aggregation, CostClass, EvalContext, MetaKey, MetricResult
 from agent_eval.core.metric import BaseMetric
@@ -63,6 +64,55 @@ class JudgeMetric(BaseMetric):
         verdict = self.backend.evaluate(request)
         return MetricResult(
             self.name, verdict.score, confidence=verdict.confidence, detail={"reason": verdict.reason}
+        )
+
+
+def _repeated_runs(ctx: EvalContext, key: str) -> list[str]:
+    runs = ctx.metadata.get(key)
+    if runs is None:
+        raise ValueError(f"metadata['{key}'] (the repeated runs for this query) is required")
+    if isinstance(runs, str) or not isinstance(runs, Sequence):
+        raise ValueError(f"metadata['{key}'] must be a list of runs (one generation per run)")
+    if len(runs) < 2:
+        raise ValueError(f"metadata['{key}'] needs at least 2 runs to measure consistency")
+    return [str(r) for r in runs]
+
+
+class SelfConsistencyMetric(JudgeMetric):
+    """Pairwise self-consistency across repeated runs of the same query.
+
+    Subclasses set ``runs_key`` (which metadata array holds the runs) and ``_rubric``. Every
+    unordered pair (i < j) is judged for semantic equivalence — the pair rides in
+    ``response``/``reference`` — and the score is the mean over the N(N-1)/2 pairs (a PoLL panel
+    applies per pair; ``confidence`` is the mean panel agreement). Judge-call cost is quadratic
+    in the number of runs.
+    """
+
+    requires = frozenset()  # runs live in metadata; checked in _compute
+    runs_key: str = ""
+    _rubric: str = ""
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        runs = _repeated_runs(ctx, self.runs_key)
+        judges = [self.backend, *self.panel]
+        pair_scores: list[float] = []
+        agreements: list[float] = []
+        for i, j in combinations(range(len(runs)), 2):
+            request = JudgeRequest(
+                instruction=self._rubric, question=str(ctx.input),
+                response=runs[i], reference=runs[j],
+            )
+            if len(judges) > 1:
+                score, agreement = poll_pointwise(judges, request)
+                agreements.append(agreement)
+            else:
+                score = self.backend.evaluate(request).score
+            pair_scores.append(score)
+        value = sum(pair_scores) / len(pair_scores)
+        confidence = sum(agreements) / len(agreements) if agreements else None
+        return MetricResult(
+            self.name, value, confidence=confidence,
+            detail={"n_runs": len(runs), "pair_scores": [round(s, 4) for s in pair_scores]},
         )
 
 

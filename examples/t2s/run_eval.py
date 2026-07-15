@@ -12,7 +12,7 @@ It calls the very same library functions the CLI wraps (``load_config`` → ``pr
 source of truth for the datasets, ``state_map``, metrics, and thresholds.
 
 It runs both suites the config defines: ``correctness`` (soft_f1/component_match/ast_valid — gated on
-SQL *execution*, never on a judge) and ``response`` (t2s_faithfulness/t2s_consistency/llm_judge —
+SQL *execution*, never on a judge) and ``response`` (t2s_faithfulness/llm_judge + t2s_consistency across repeated runs —
 does the NL answer reflect what the query returned?). Watch ``soft_f1`` catch the deliberately buggy
 query (q08 drops a WHERE filter) while ``ast_valid`` stays 1.0 — that's the intended division of
 labor between correctness and groundedness.

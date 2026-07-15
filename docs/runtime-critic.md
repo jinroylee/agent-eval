@@ -35,18 +35,18 @@ entrypoints.
 ## Sketch
 
 The critic is built from exactly the metrics you already use — e.g. a T2S step gated on `ast_valid`
-(grounded, hard) with a `t2s_consistency` confidence check (graded, soft):
+(grounded, hard) with a `t2s_faithfulness` confidence check (graded, soft):
 
 ```python
 from agent_eval.core.contracts import EvalContext, MetaKey
-from agent_eval.metrics.t2s import AstValid, T2SConsistency
+from agent_eval.metrics.t2s import AstValid, T2SFaithfulness
 from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
 from agent_eval.runtime.critic import Critic, CriticPolicy, critic_loop
 from agent_eval.runtime.fallback import default_fallbacks
 
 critic = Critic(
-    metrics=[AstValid(), T2SConsistency(FunctionJudge(lexical_overlap_judge))],
-    policy=CriticPolicy(tau={"t2s_consistency": 0.6}, max_retries=2),
+    metrics=[AstValid(), T2SFaithfulness(FunctionJudge(lexical_overlap_judge))],
+    policy=CriticPolicy(tau={"t2s_faithfulness": 0.6}, max_retries=2),
 )
 
 def generate(attempt, critique):

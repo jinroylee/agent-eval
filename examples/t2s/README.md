@@ -21,8 +21,9 @@ reports what the query returned.
 | canonical field | graph state key | used by |
 |---|---|---|
 | `sql` | `sql` | `component_match`, `ast_valid` (the generated SQL text) |
-| `execution_result` | `execution_result` | `soft_f1`, `t2s_faithfulness`, `t2s_consistency` (the rows the query returned) |
-| `output` | `output` | `llm_judge`, `t2s_faithfulness`, `t2s_consistency` (the NL answer) |
+| `execution_result` | `execution_result` | `soft_f1`, `t2s_faithfulness` (the rows the query returned) |
+| `output` | `output` | `llm_judge`, `t2s_faithfulness` (the NL answer) |
+| `sql` (run N times via `n_runs`) | `metadata['repeated_sql']` | `t2s_consistency` (do repeated runs agree?) |
 | `tokens` | `tokens` | (available for `token_usage`) |
 
 The gold dataset supplies `metadata['gold_sql']` (for the AST diagnostic) and the pre-computed
@@ -50,7 +51,7 @@ VERDICT: PASS
 
 === t2s/response  dataset=predictions  n=12 ===
 t2s_faithfulness           0.650        [0.581, 0.719]         -  info
-t2s_consistency            0.650        [0.581, 0.719]         -  info
+t2s_consistency            1.000        [1.000, 1.000]         -  info
 llm_judge                  0.500        [0.500, 0.500]         -  info
 ```
 

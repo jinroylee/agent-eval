@@ -16,8 +16,9 @@ and **response** groundedness (is the answer supported by what it fetched?).
 | canonical field | graph state key | used by |
 |---|---|---|
 | `retrieved_ids` | `retrieved_ids` | `recall_at_k`, `precision_at_k`, `ndcg_at_k` (ranked ids) |
-| `retrieved_context` | `retrieved_context` | `faithfulness`, `consistency` (chunk texts) |
-| `output` | `output` | `faithfulness`, `consistency`, `llm_judge` (the answer) |
+| `retrieved_context` | `retrieved_context` | `faithfulness` (chunk texts) |
+| `output` | `output` | `faithfulness`, `llm_judge` (the answer) |
+| `output` (run N times via `n_runs`) | `metadata['repeated_outputs']` | `consistency` (do repeated runs agree?) |
 | `tokens` | `tokens` | (available for `token_usage`) |
 
 The gold dataset supplies `metadata['relevant_ids']` (gold ids) for the retrieval metrics.

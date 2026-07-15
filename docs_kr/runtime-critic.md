@@ -33,18 +33,18 @@
 ## 스케치
 
 크리틱은 이미 사용 중인 바로 그 메트릭들로 구성된다 — 예를 들어 `ast_valid`(근거 기반, 하드)로 게이팅되고
-`t2s_consistency` 신뢰도 검증(채점형, 소프트)을 갖춘 T2S 스텝처럼:
+`t2s_faithfulness` 신뢰도 검증(채점형, 소프트)을 갖춘 T2S 스텝처럼:
 
 ```python
 from agent_eval.core.contracts import EvalContext, MetaKey
-from agent_eval.metrics.t2s import AstValid, T2SConsistency
+from agent_eval.metrics.t2s import AstValid, T2SFaithfulness
 from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
 from agent_eval.runtime.critic import Critic, CriticPolicy, critic_loop
 from agent_eval.runtime.fallback import default_fallbacks
 
 critic = Critic(
-    metrics=[AstValid(), T2SConsistency(FunctionJudge(lexical_overlap_judge))],
-    policy=CriticPolicy(tau={"t2s_consistency": 0.6}, max_retries=2),
+    metrics=[AstValid(), T2SFaithfulness(FunctionJudge(lexical_overlap_judge))],
+    policy=CriticPolicy(tau={"t2s_faithfulness": 0.6}, max_retries=2),
 )
 
 def generate(attempt, critique):

@@ -23,14 +23,16 @@ uv sync --extra langgraph        # add --extra t2s for text-to-SQL metrics
 
 | 표준 필드 | 매핑 위치 | 읽는 메트릭 |
 |---|---|---|
-| `output` | `EvalContext.output` | `llm_judge`, `bertscore`, `faithfulness`, `consistency`, `t2s_*` |
-| `retrieved_context` | `EvalContext.retrieved_context` | `faithfulness`, `consistency` |
+| `output` | `EvalContext.output` | `llm_judge`, `bertscore`, `faithfulness`, `t2s_faithfulness` |
+| `retrieved_context` | `EvalContext.retrieved_context` | `faithfulness` |
 | `retrieved_ids` | `metadata['retrieved_ids']` | `recall_at_k`, `precision_at_k`, `ndcg_at_k` |
 | `sql` | `metadata['sql']` | `soft_f1`, `component_match`, `ast_valid`, `t2s_*` |
 | `tokens` | `metadata['tokens']` | `token_usage` |
 
 `latency_ms`는 자동으로 채워진다(하니스가 각 실행 시간을 측정한다). 표준 필드 집합에 없는 것은 모두 자기 이름
-그대로 `metadata`에 들어간다. 전체 필드 레퍼런스는 [metrics.md](metrics.md)에 있다.
+그대로 `metadata`에 들어간다. `prediction.n_runs > 1`이면 하니스가 같은 입력으로 그래프를 N번 실행해
+반복 생성 결과를 `metadata['repeated_outputs']` / `['repeated_sql']`에 저장한다 — 자기일관성 메트릭
+(`consistency`, `t2s_consistency`)이 읽는 값이다. 전체 필드 레퍼런스는 [metrics.md](metrics.md)에 있다.
 
 메트릭이 필요로 하는 것은 무엇이든 그래프 상태의 키로 노출한다. 예를 들어 RAG 에이전트는 검색과 근거성을 채점할
 수 있도록, 검색한 랭킹된 id와 청크 텍스트를 상태에 넣어야 한다:
@@ -42,7 +44,7 @@ from langgraph.graph import StateGraph, START, END
 class RagState(TypedDict, total=False):
     input: str                    # the question (the harness sets this)
     retrieved_ids: list[str]      # ranked doc ids   → recall/precision/ndcg
-    retrieved_context: list[str]  # chunk texts      → faithfulness/consistency
+    retrieved_context: list[str]  # chunk texts      → faithfulness
     output: str                   # the final answer → llm_judge
     tokens: int
 
@@ -84,6 +86,7 @@ prediction:
     retrieved_ids: retrieved_ids
     retrieved_context: retrieved_context
     output: output
+  n_runs: 3                     # 반복 실행 → metadata['repeated_outputs'] (consistency)
 
 suites:
   retrieval:

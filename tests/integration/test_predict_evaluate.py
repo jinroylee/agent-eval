@@ -76,3 +76,54 @@ def test_evaluate_predictions_passes_gate(tmp_path):
     result = evaluate(suite, load_dataset(build_dataset_spec(cfg, "predictions")))
     # output == reference, so the stub judge scores 1.0 -> gate passes
     assert result.verdict.passed and result.aggregates[0].value == 1.0
+
+
+_MULTI_RUN_AGENT = '''
+from typing import TypedDict
+from langgraph.graph import StateGraph, START, END
+
+class S(TypedDict, total=False):
+    input: str
+    output: str
+    sql: str
+
+def node(state):
+    return {"output": state["input"].upper(), "sql": f"SELECT '{state['input']}'"}
+
+_g = StateGraph(S)
+_g.add_node("n", node)
+_g.add_edge(START, "n")
+_g.add_edge("n", END)
+graph = _g.compile()
+'''
+
+
+def test_predict_n_runs_collects_repeated_generations(tmp_path):
+    (tmp_path / "agent.py").write_text(_MULTI_RUN_AGENT)
+    (tmp_path / "gold.jsonl").write_text(json.dumps({"q": "hello"}))
+    cfg = ConfigModel(
+        agent_type="t2s",
+        datasets={
+            "gold": {"adapter": "jsonl", "path": str(tmp_path / "gold.jsonl"),
+                     "field_map": {"input": "q"}},
+            "predictions": {"adapter": "jsonl", "path": str(tmp_path / "pred.jsonl")},
+        },
+        prediction={
+            "graph": f"{tmp_path / 'agent.py'}:graph",
+            "source": "gold", "target": "predictions", "input_key": "input",
+            "state_map": {"output": "output", "sql": "sql"},
+            "n_runs": 3,
+        },
+    )
+    records = predict(cfg)
+    md = records[0]["metadata"]
+    # run 1 stays the canonical prediction; all 3 runs are collected as arrays
+    assert records[0]["output"] == "HELLO" and md["sql"] == "SELECT 'hello'"
+    assert md["repeated_outputs"] == ["HELLO", "HELLO", "HELLO"]
+    assert md["repeated_sql"] == ["SELECT 'hello'", "SELECT 'hello'", "SELECT 'hello'"]
+
+
+def test_predict_single_run_writes_no_repeated_arrays(tmp_path):
+    records = predict(_config(tmp_path))  # n_runs defaults to 1
+    assert "repeated_outputs" not in records[0]["metadata"]
+    assert "repeated_sql" not in records[0]["metadata"]

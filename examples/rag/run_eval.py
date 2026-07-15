@@ -12,7 +12,7 @@ It calls the very same library functions the CLI wraps (``load_config`` → ``pr
 source of truth for the datasets, ``state_map``, metrics, and thresholds.
 
 It runs both suites the config defines: ``retrieval`` (recall/precision/ndcg@k — the hard gate) and
-``response`` (faithfulness/consistency/llm_judge groundedness + quality).
+``response`` (faithfulness/llm_judge groundedness + quality, consistency across repeated runs).
 
 Run it (from anywhere — it evaluates the config's repo-root-relative paths like the CLI does)::
 

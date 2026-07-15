@@ -6,7 +6,7 @@
 | ``component_match`` | yes | ``metadata['sql']``, ``metadata['gold_sql']``                          |
 | ``ast_valid``       | no  | ``metadata['sql']``                                                    |
 | ``t2s_faithfulness``| no  | ``metadata['execution_result']``, ``output``                          |
-| ``t2s_consistency`` | no  | ``metadata['execution_result']``, ``output``                          |
+| ``t2s_consistency`` | no  | ``metadata['repeated_sql']`` (+ ``input``)                             |
 
 Objective correctness is graded on the **result set** the query produced — but the query is **not
 executed at eval time**. The predicted result set is supplied by the agent's own state
@@ -15,11 +15,14 @@ executed at eval time**. The predicted result set is supplied by the agent's own
 ``dict[str, Any]`` per row** (``column -> value``); loosely-typed encodings (a JSON string, a single
 unwrapped row, or positional cells) are coerced to that shape on read (see ``_coerce_rows``).
 ``soft_f1`` compares those two row-sets (partial credit via
-fact-bag F1 over ``(column, value)`` facts); the judge is confined to whether the ``output`` reports the
-predicted result set — and it reads a **bounded statistical digest** of that set (per-column
-aggregates over every row + a small sample; see ``_digest_lines``), never the raw rows, so the prompt
-stays small no matter how large the result is. Result-set comparison semantics (row order, duplicates,
-NULLs, float tolerance) are explicit via ``defaults.result_set_policy``. The AST metrics
+fact-bag F1 over ``(column, value)`` facts); the ``t2s_faithfulness`` judge is confined to whether the
+``output`` reports the predicted result set — and it reads a **bounded statistical digest** of that set
+(per-column aggregates over every row + a small sample; see ``_digest_lines``), never the raw rows, so
+the prompt stays small no matter how large the result is. ``t2s_consistency`` is different: it judges
+**repeated runs of the same query** — the N generated SQLs in ``metadata['repeated_sql']`` (filled via
+``prediction.n_runs``) are compared pairwise for semantic equivalence. Result-set comparison
+semantics (row order, duplicates, NULLs, float tolerance) are explicit via
+``defaults.result_set_policy``. The AST metrics
 (``component_match``, ``ast_valid``) parse the SQL text and need the ``[t2s]`` extra (``sqlglot``);
 they first normalize escaped-whitespace artifacts from raw data (a literal ``\n``, ``\\n``, ``\t``)
 that would otherwise make sqlglot choke on a stray backslash (see ``_clean_sql``).
@@ -40,7 +43,7 @@ from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import BuildContext, MetricRegistry
 from agent_eval.execution.compare import ResultSetPolicy, soft_f1
 from agent_eval.judges.backend import JudgeRequest
-from agent_eval.metrics.common import JudgeMetric, resolve_judge
+from agent_eval.metrics.common import JudgeMetric, SelfConsistencyMetric, resolve_judge
 
 # The judge never sees the raw result set (it may be enormous). Instead it sees a bounded
 # *statistical digest* whose size is O(columns), not O(rows): per-column aggregates + a small sample.
@@ -334,16 +337,6 @@ _T2S_FAITHFULNESS_RUBRIC = (
     "contradict the digest or appear fabricated. If a specific value is not shown in the digest and "
     "cannot be confirmed or denied by it, do not penalize its use."
 )
-_T2S_CONSISTENCY_RUBRIC = (
-    "The EVIDENCE is a STATISTICAL DIGEST of the full result set the SQL query returned (counts, "
-    "per-column aggregates and distinct values, and a small sample of rows — not the complete rows). "
-    "Judge whether the RESPONSE TO EVALUATE is consistent with it: it must not state anything that "
-    "contradicts the digest — a count, total, or value that conflicts with the reported aggregates or "
-    "enumerated values. Do not penalize supported facts that are merely omitted, nor specific values "
-    "the digest can neither confirm nor deny."
-)
-
-
 class _ExecutionJudgeMetric(JudgeMetric):
     """Judge the final NL ``output`` against the predicted result set (``metadata['execution_result']``).
 
@@ -389,9 +382,22 @@ class T2SFaithfulness(_ExecutionJudgeMetric):
     _rubric = _T2S_FAITHFULNESS_RUBRIC
 
 
-class T2SConsistency(_ExecutionJudgeMetric):
+# --------------------------------------------------------------------------- self-consistency (non-GT, judge)
+_SQL_CONSISTENCY_RUBRIC = (
+    "The RESPONSE TO EVALUATE and the REFERENCE ANSWER are two SQL queries the same agent "
+    "generated for the SAME user question on different runs. Judge whether they are semantically "
+    "equivalent: run against the same database, would they return the same result (same rows, "
+    "columns, filters, grouping, and aggregation)? Ignore formatting, letter case, aliases, and "
+    "quoting; penalize different tables, columns, filters, aggregations, or limits."
+)
+
+
+class T2SConsistency(SelfConsistencyMetric):
+    """Self-consistency: do N generated SQLs for the SAME query (``metadata['repeated_sql']``) agree?"""
+
     name = "t2s_consistency"
-    _rubric = _T2S_CONSISTENCY_RUBRIC
+    runs_key = MetaKey.REPEATED_SQL
+    _rubric = _SQL_CONSISTENCY_RUBRIC
 
 
 # --------------------------------------------------------------------------- registration
@@ -415,6 +421,4 @@ def register(registry: MetricRegistry) -> None:
     registry.register(
         "t2s_faithfulness", lambda p, ctx: T2SFaithfulness(resolve_judge(ctx), ctx.panel, **_digest_params(p))
     )
-    registry.register(
-        "t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel, **_digest_params(p))
-    )
+    registry.register("t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel))

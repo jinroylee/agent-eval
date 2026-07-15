@@ -1,7 +1,8 @@
 # LLM-as-a-judge(LLM 심판)
 
-네 가지 메트릭이 LLM judge를 사용한다: `llm_judge`(전반적 품질), `faithfulness` / `consistency`(RAG
-근거성, 각각 충실성/일관성), 그리고 `t2s_faithfulness` / `t2s_consistency`(T2S 근거성). 이들은 하나의
+다섯 가지 메트릭이 LLM judge를 사용한다: `llm_judge`(전반적 품질), `faithfulness` / `t2s_faithfulness`
+(근거성), 그리고 `consistency` / `t2s_consistency`(같은 질문의 반복 실행 간 자기일관성 — 쌍별 판정).
+이들은 하나의
 작은 백엔드 인터페이스를 공유하므로, 모델을 한 번만 연결하면 모든 judge 메트릭이 이를 사용한다.
 
 > **judge는 주관적 품질과 근거성에만 국한하고, 객관적 정확성에는 절대 사용하지 않는다.** T2S 쿼리
@@ -107,6 +108,6 @@ judge:
 |---|---|
 | `llm_judge` | 완전성, 명확성, 유용성, 관련성, 친절함(기준 답이 주어지면 그에 대비하여) |
 | `faithfulness` | 답변의 모든 주장이 검색된 청크에 의해 **뒷받침되는지** |
-| `consistency` | 답변이 검색된 청크와 **모순되지 않는지** |
+| `consistency` | 같은 질문을 반복 실행했을 때 **같은 답**을 주는지(쌍별) |
 | `t2s_faithfulness` | NL 답변이 **실행된 쿼리 결과**를 충실하게 보고하는지 |
-| `t2s_consistency` | NL 답변이 실행된 쿼리 결과와 모순되지 않는지 |
+| `t2s_consistency` | 같은 질문을 반복 실행했을 때 **동등한 SQL**을 생성하는지(쌍별) |

@@ -6,7 +6,7 @@ answered*.
 
 Required state fields (pointed at by the config's ``state_map``):
     retrieved_ids      -> ranked retrieved doc ids   (recall@k / precision@k / ndcg@k)
-    retrieved_context  -> retrieved chunk *texts*     (faithfulness / consistency)
+    retrieved_context  -> retrieved chunk *texts*     (faithfulness)
     output             -> the final answer            (llm_judge)
     tokens             -> tokens spent                 (token_usage)
 

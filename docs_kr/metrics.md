@@ -62,11 +62,12 @@ extra가 필요하다. 표현이 다르지만 올바른 답변, 즉 정확 일�
 | `precision_at_k` | 예 | 동일 | mean | top-k 중 관련 있는 것의 비율 |
 | `ndcg_at_k` | 예 | 동일 (+ 등급별 이득에는 `metadata['relevance']`) | mean | 순위 가중 관련도 |
 | `faithfulness` | 아니오 | `retrieved_context`, `output` | mean | 모든 주장이 검색된 청크로 뒷받침되는가? |
-| `consistency` | 아니오 | `retrieved_context`, `output` | mean | 답변이 청크와 모순되지 않는가? |
+| `consistency` | 아니오 | `metadata['repeated_outputs']` (+ `input`) | mean | 같은 질문을 반복 실행했을 때 같은 답을 주는가? |
 
-`recall_at_k`는 다운스트림의 모든 것에 상한을 씌우므로 보통 하드 게이트로 쓴다. `faithfulness`(주장이
-*뒷받침되어야* 함)와 `consistency`(주장이 *모순되지 않아야* 함)는 judge 기반이며, 서로 다른 루브릭을 쓰지만
-둘 다 `retrieved_context`에 담긴 검색된 청크 텍스트를 읽는다. `ndcg_at_k`는 기본적으로 이진(binary)
+`recall_at_k`는 다운스트림의 모든 것에 상한을 씌우므로 보통 하드 게이트로 쓴다. `faithfulness`(모든
+주장이 검색된 청크로 *뒷받침되어야* 함)는 근거에 대해 judge로 채점한다. `consistency`는 **반복 실행에
+걸쳐** judge로 채점한다: 같은 질문을 N번 실행하고(`prediction.n_runs`) 답변의 모든 쌍(pair)이 서로
+일치하는지 판정한다 — 점수는 쌍별 평균이며, 질문당 judge 호출은 N(N−1)/2번이다. `ndcg_at_k`는 기본적으로 이진(binary)
 관련도를 쓴다. 등급별 관련도를 원하면 `metadata['relevance']`(`{id: gain}`)를 전달한다.
 
 ---
@@ -83,7 +84,7 @@ extra가 필요하다. 표현이 다르지만 올바른 답변, 즉 정확 일�
 | `component_match` | 예 | `metadata['sql']`, `metadata['gold_sql']` | mean | AST 겹침(테이블 + 프로젝션) — 진단용 |
 | `ast_valid` | 아니오 | `metadata['sql']` | rate | SQL이 파싱되는가? |
 | `t2s_faithfulness` | 아니오 | `metadata['sql']`, `metadata['db_ref']`, `output` | mean | 자연어(NL) 답변이 쿼리 결과를 충실하게 보고하는가? |
-| `t2s_consistency` | 아니오 | `metadata['sql']`, `metadata['db_ref']`, `output` | mean | 자연어(NL) 답변이 결과와 모순되지 않는가? |
+| `t2s_consistency` | 아니오 | `metadata['repeated_sql']` (+ `input`) | mean | 같은 질문을 반복 실행했을 때 동등한 SQL을 생성하는가? |
 
 **객관적 정확성은 실행으로 게이팅하며, 결코 judge로 게이팅하지 않는다.** `soft_f1`은 예측 SQL과 정답(gold)
 SQL을 모두 실행하고 결과 집합을 비교한다(셀-백 F1로 부분 점수 부여). judge는 자연어 `output`이 쿼리가
@@ -100,7 +101,8 @@ SQL을 모두 실행하고 결과 집합을 비교한다(셀-백 F1로 부분 �
 
 ## "consistency" 명명에 관한 참고
 
-최종 메트릭 세트는 *consistency*를 RAG와 T2S 양쪽에 모두 올려둔다. 둘은 아이디어(답변이 근거와
-모순되어서는 안 된다)를 공유하지만 서로 다른 근거를 읽으므로, 레지스트리는 이들을 별개의 타입 이름으로
-노출한다: `consistency`(RAG, 근거 = 검색된 청크)와 `t2s_consistency`(T2S, 근거 = 실행된 결과 집합).
-`faithfulness` / `t2s_faithfulness`도 마찬가지다.
+최종 메트릭 세트는 *consistency*를 RAG와 T2S 양쪽에 모두 올려둔다. 둘 다 **같은 질문을 반복 실행했을
+때의 자기일관성(self-consistency)**을 측정하며(반복 실행은 `prediction.n_runs`로 채운다), 비교 대상만
+다르다 — 최종 답변(`metadata['repeated_outputs']`) 대 생성된 SQL(`metadata['repeated_sql']`). 그래서
+레지스트리는 이들을 별개의 타입 이름으로 노출한다: `consistency`(RAG)와 `t2s_consistency`(T2S).
+`faithfulness` / `t2s_faithfulness`는 근거 기반(grounding) 의미를 그대로 유지한다.

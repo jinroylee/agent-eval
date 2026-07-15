@@ -1,4 +1,4 @@
-"""RAG metrics — retrieval quality (reference-grounded) and answer groundedness (judge-based).
+"""RAG metrics — retrieval quality (reference-grounded), groundedness, and self-consistency.
 
 | metric            | GT? | reads (EvalContext)                                  |
 |-------------------|-----|------------------------------------------------------|
@@ -6,11 +6,13 @@
 | ``precision_at_k``| yes | ``metadata['retrieved_ids']``, ``metadata['relevant_ids']`` |
 | ``ndcg_at_k``     | yes | ``+ metadata['relevance']`` (optional graded gains)  |
 | ``faithfulness``  | no  | ``retrieved_context``, ``output``                    |
-| ``consistency``   | no  | ``retrieved_context``, ``output``                    |
+| ``consistency``   | no  | ``metadata['repeated_outputs']`` (+ ``input``)       |
 
 Retrieval metrics work on **ids**: ``retrieved_ids`` is the ranked list the retriever returned
 (best first) and ``relevant_ids`` is the gold set. ``k`` is fixed per evaluation (a config param),
-so the same operating point is measured every run.
+so the same operating point is measured every run. ``faithfulness`` judges the answer against the
+retrieved chunks; ``consistency`` judges **repeated runs of the same query** against each other
+(fill ``metadata['repeated_outputs']`` via ``prediction.n_runs``).
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from agent_eval.core.contracts import CostClass, EvalContext, MetaKey, MetricRes
 from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import BuildContext, MetricRegistry
 from agent_eval.judges.backend import JudgeRequest
-from agent_eval.metrics.common import JudgeMetric, resolve_judge
+from agent_eval.metrics.common import JudgeMetric, SelfConsistencyMetric, resolve_judge
 
 # --------------------------------------------------------------------------- retrieval (GT)
 
@@ -101,13 +103,6 @@ _FAITHFULNESS_RUBRIC = (
     "response must be supported by (inferable from) the evidence. Penalize claims that are not "
     "supported by the evidence (hallucinations), even if they happen to be true."
 )
-_CONSISTENCY_RUBRIC = (
-    "Judge whether the RESPONSE TO EVALUATE is consistent with the EVIDENCE: it must not contradict "
-    "anything stated in the evidence. Penalize any claim that conflicts with the evidence. "
-    "(Unlike faithfulness, omitting supported facts is fine — only contradictions are penalized.)"
-)
-
-
 class _ContextJudgeMetric(JudgeMetric):
     """A judge metric grading the response against the retrieved chunks."""
 
@@ -127,9 +122,22 @@ class Faithfulness(_ContextJudgeMetric):
     _rubric = _FAITHFULNESS_RUBRIC
 
 
-class ResponseConsistency(_ContextJudgeMetric):
+# --------------------------------------------------------------------------- self-consistency (non-GT, judge)
+_SELF_CONSISTENCY_RUBRIC = (
+    "The RESPONSE TO EVALUATE and the REFERENCE ANSWER are two answers the same agent produced "
+    "for the SAME user question on different runs. Judge whether they are consistent with each "
+    "other: do they give the same substantive answer — the same facts, figures, and conclusion? "
+    "Ignore differences in wording, order, or level of detail; penalize factual disagreement or "
+    "contradictory conclusions."
+)
+
+
+class ResponseConsistency(SelfConsistencyMetric):
+    """Self-consistency: do N answers to the SAME query (``metadata['repeated_outputs']``) agree?"""
+
     name = "consistency"
-    _rubric = _CONSISTENCY_RUBRIC
+    runs_key = MetaKey.REPEATED_OUTPUTS
+    _rubric = _SELF_CONSISTENCY_RUBRIC
 
 
 # --------------------------------------------------------------------------- registration

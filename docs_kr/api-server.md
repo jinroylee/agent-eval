@@ -46,12 +46,12 @@ docker build --build-arg EXTRAS="server,t2s,bertscore" -t agent-eval-api .
 | `POST /rag/precision_at_k` | `precision_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/ndcg_at_k` | `ndcg_at_k` | 동일 (+ 선택: `.relevance`) | `k` |
 | `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | — |
-| `POST /rag/consistency` | `consistency` | `output`, `retrieved_context` | — |
+| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (선택: `input`) | — |
 | `POST /t2s/soft_f1` | `soft_f1` | `metadata.execution_result`, `.gold_execution_result` | `result_policy` |
 | `POST /t2s/component_match` | `component_match` | `metadata.sql`, `.gold_sql` | `dialect` |
 | `POST /t2s/ast_valid` | `ast_valid` | `metadata.sql` | `dialect` |
 | `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (선택: `input`) | `sample_rows`, `max_distinct`, `max_columns` |
-| `POST /t2s/consistency` | `t2s_consistency` | `output`, `metadata.execution_result` (선택: `input`) | `sample_rows`, `max_distinct`, `max_columns` |
+| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (선택: `input`) | — |
 
 `result_policy`는 `ResultSetPolicy`의 필드를 그대로 받는다: `row_order`(`ignore|strict`),
 `duplicates`(`keep|dedup`), `nulls`(`distinct|coalesce`), `column_order`(`ignore|strict`),
@@ -60,8 +60,10 @@ docker build --build-arg EXTRAS="server,t2s,bertscore" -t agent-eval-api .
 
 ## 요청 / 응답
 
-모든 엔드포인트가 하나의 요청 형태를 공유한다 — 컨텍스트를 하나만 보내도 되고, N개를 보낸 뒤(예:
-일관성 확인을 위해 같은 입력을 반복 실행한 결과) 최종 집계값만 읽어도 된다:
+모든 엔드포인트가 하나의 요청 형태를 공유한다 — 컨텍스트를 하나만 보내도 되고, N개(질문당 하나)를 보낸
+뒤 최종 집계값만 읽어도 된다. 일관성(consistency) 엔드포인트에서는 한 질문의 반복 실행 결과가 **하나의
+컨텍스트 안에**(`metadata.repeated_outputs` / `metadata.repeated_sql`) 담기며, 컨텍스트 N개는 서로 다른
+질문 그룹 N개를 뜻한다:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/rag/recall_at_k \
@@ -124,7 +126,8 @@ PoLL 패널이면 항목마다 패널 크기만큼 호출된다). `n`은 전송�
 - 인증/TLS가 없다 — 폐쇄망(closed network)을 전제로 만들어졌으므로, 외부 노출이 문제가 된다면
   게이트웨이를 앞단에 둔다.
 - 배치 크기 상한이 없다: 메모리와 지연 시간은 `len(contexts)`에 비례해 커지고, judge 엔드포인트는
-  항목마다 설정된 judge 수만큼 LLM을 호출한다(PoLL 패널이면 그만큼 배수가 된다). `--workers`로
+  항목마다 설정된 judge 수만큼 LLM을 호출한다(PoLL 패널이면 그만큼 배수가 되고, 일관성 엔드포인트는
+  실행 쌍 N(N−1)/2만큼 추가로 배수가 된다). `--workers`로
   스케일 아웃한다(채점은 요청 단위로 동기 실행된다).
 - `uvicorn[standard]`는 컴파일된 휠(wheel)인 `uvloop`, `httptools`, `watchfiles`, `websockets`를
   함께 설치한다. 내부 미러가 사용 중인 플랫폼용 휠을 제공하지 못한다면 플레인 `uvicorn`을 대신

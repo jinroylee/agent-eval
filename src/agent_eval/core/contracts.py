@@ -50,6 +50,8 @@ class MetaKey:
     DB_REF = "db_ref"  # T2S: path/URI of a database (used at data-prep/predict time, not at eval time)
     EXECUTION_RESULT = "execution_result"  # T2S: predicted result set — list[dict[str, Any]] rows (state)
     GOLD_EXECUTION_RESULT = "gold_execution_result"  # T2S: gold result set — list[dict[str, Any]] rows (GT)
+    REPEATED_OUTPUTS = "repeated_outputs"  # consistency: N final responses to the SAME input (one per run)
+    REPEATED_SQL = "repeated_sql"  # T2S consistency: the N generated SQLs for the SAME input (one per run)
     LATENCY_MS = "latency_ms"  # perf: wall-clock of the run (auto-filled by the harness)
     TOKENS = "tokens"  # perf: tokens spent on the run (filled by the harness if available)
     CLUSTER_ID = "cluster_id"  # stats: group id for non-iid items (widens the CI)
@@ -76,7 +78,7 @@ class EvalContext:
     input: Any  # the user message / question
     output: Any = None  # the final response to the user (what the common metrics score)
     expected: Any = None  # gold final response (GT metrics only)
-    retrieved_context: Sequence[str] = ()  # RAG: retrieved chunk texts (for faithfulness/consistency)
+    retrieved_context: Sequence[str] = ()  # RAG: retrieved chunk texts (for faithfulness)
     metadata: Mapping[str, Any] = field(default_factory=dict)  # see MetaKey for the keys read
 
 

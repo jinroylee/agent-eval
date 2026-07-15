@@ -45,12 +45,12 @@ judge, and optional-capability availability (`t2s`/`bertscore`) at `GET /health`
 | `POST /rag/precision_at_k` | `precision_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/ndcg_at_k` | `ndcg_at_k` | same (+ opt `.relevance`) | `k` |
 | `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | — |
-| `POST /rag/consistency` | `consistency` | `output`, `retrieved_context` | — |
+| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (opt `input`) | — |
 | `POST /t2s/soft_f1` | `soft_f1` | `metadata.execution_result`, `.gold_execution_result` | `result_policy` |
 | `POST /t2s/component_match` | `component_match` | `metadata.sql`, `.gold_sql` | `dialect` |
 | `POST /t2s/ast_valid` | `ast_valid` | `metadata.sql` | `dialect` |
 | `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (opt `input`) | `sample_rows`, `max_distinct`, `max_columns` |
-| `POST /t2s/consistency` | `t2s_consistency` | `output`, `metadata.execution_result` (opt `input`) | `sample_rows`, `max_distinct`, `max_columns` |
+| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (opt `input`) | — |
 
 `result_policy` accepts the `ResultSetPolicy` fields: `row_order` (`ignore|strict`), `duplicates`
 (`keep|dedup`), `nulls` (`distinct|coalesce`), `column_order` (`ignore|strict`), `float_tolerance`.
@@ -58,8 +58,10 @@ An explicit JSON `null` for any param means "use the default" — same as omitti
 
 ## Request / response
 
-One request shape for every endpoint — post one context, or post N (e.g. repeated runs of the
-same input for a consistency check) and read the final aggregated value:
+One request shape for every endpoint — post one context, or post N (one per query) and read the
+final aggregated value. For the consistency endpoints, the repeated runs of one query ride
+**inside a single context** (`metadata.repeated_outputs` / `metadata.repeated_sql`); posting N
+contexts means N separate query-groups:
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/rag/recall_at_k \
@@ -120,7 +122,8 @@ Nothing set → the deterministic lexical-overlap **stub** (offline; not a real 
 
 - No auth/TLS — built for a closed network; front with a gateway if exposure matters.
 - No batch cap: memory and latency scale with `len(contexts)`; judge endpoints make one LLM call
-  per item per configured judge (a PoLL panel multiplies accordingly). Scale out with
+  per item per configured judge (a PoLL panel multiplies accordingly; the consistency endpoints
+  additionally multiply by their N(N−1)/2 run pairs). Scale out with
   `--workers` (scoring is synchronous per request).
 - `uvicorn[standard]` ships compiled wheels (`uvloop`, `httptools`, `watchfiles`, `websockets`).
   If your internal mirror can't serve them for your platform, install plain `uvicorn` instead —

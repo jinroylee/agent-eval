@@ -1,7 +1,8 @@
 # LLM-as-a-judge
 
-Four metrics use an LLM judge: `llm_judge` (overall quality), `faithfulness` / `consistency` (RAG
-groundedness), and `t2s_faithfulness` / `t2s_consistency` (T2S groundedness). They share one small
+Five metrics use an LLM judge: `llm_judge` (overall quality), `faithfulness` / `t2s_faithfulness`
+(groundedness), and `consistency` / `t2s_consistency` (self-consistency across repeated runs of the
+same query, judged pairwise). They share one small
 backend interface, so you wire a model once and every judge metric uses it.
 
 > **Confine judges to subjective quality and groundedness — never objective correctness.** T2S query
@@ -108,6 +109,6 @@ param):
 |---|---|
 | `llm_judge` | Completeness, Clarity, Usefulness, Relevance, Friendliness (vs. the reference if one is given) |
 | `faithfulness` | every claim in the answer is **supported by** the retrieved chunks |
-| `consistency` | the answer does **not contradict** the retrieved chunks |
+| `consistency` | repeated runs of the same query give **the same answer** (pairwise) |
 | `t2s_faithfulness` | the NL answer faithfully reports the **executed query result** |
-| `t2s_consistency` | the NL answer does not contradict the executed query result |
+| `t2s_consistency` | repeated runs of the same query generate **equivalent SQL** (pairwise) |

@@ -40,6 +40,8 @@ prediction:                      # how `agent-eval predict` fills predictions (o
   source: gold                   # dataset of inputs to run the agent on
   target: predictions            # dataset to write predictions into (must be jsonl)
   input_key: input               # graph state key the question is passed under
+  n_runs: 1                      # >1: run the graph N times per input and store the repeated
+                                 #     generations (repeated_outputs / repeated_sql) for consistency
   state_map:                     # canonical field <- graph final-state key
     output: output
     retrieved_ids: retrieved_ids

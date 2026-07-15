@@ -174,12 +174,24 @@ def test_t2s_faithfulness_judges_answer_against_result():
     assert r.error is None and r.score > 0.0
 
 
-def test_t2s_consistency_judges_answer_against_result():
+def test_t2s_consistency_identical_sql_scores_one():
     judge = FunctionJudge(lexical_overlap_judge)
-    ctx = _ctx(output="Alice and Carol earn over 100000",
-               **{MetaKey.EXECUTION_RESULT: [{"name": "Alice"}, {"name": "Carol"}]})
+    ctx = _ctx(**{MetaKey.REPEATED_SQL: ["SELECT name FROM emp", "SELECT name FROM emp"]})
     r = T2SConsistency(judge).score(ctx)
-    assert r.error is None and r.score > 0.0
+    assert r.error is None and r.score == 1.0
+
+
+def test_t2s_consistency_divergent_sql_scores_low():
+    judge = FunctionJudge(lexical_overlap_judge)
+    # stub: |{select,name,from,emp} ∩ {select,id,from,emp}| / 4 = 0.75
+    ctx = _ctx(**{MetaKey.REPEATED_SQL: ["SELECT name FROM emp", "SELECT id FROM emp"]})
+    assert T2SConsistency(judge).score(ctx).score == 0.75
+
+
+def test_t2s_consistency_needs_repeated_sql():
+    judge = FunctionJudge(lexical_overlap_judge)
+    assert T2SConsistency(judge).score(_ctx(output="something")).error  # no repeated_sql
+    assert T2SConsistency(judge).score(_ctx(**{MetaKey.REPEATED_SQL: ["one"]})).error
 
 
 def test_t2s_judge_errors_without_result():

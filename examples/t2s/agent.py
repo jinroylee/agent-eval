@@ -13,7 +13,7 @@ needs no LLM. A couple of its queries are deliberately imperfect to show what ea
 
 Required state fields (pointed at by the config's ``state_map``):
     sql              -> the generated SQL              (component_match / ast_valid)
-    execution_result -> the rows that SQL returned     (soft_f1 / t2s_faithfulness / t2s_consistency)
+    execution_result -> the rows that SQL returned     (soft_f1 / t2s_faithfulness)
     output           -> the final NL answer            (llm_judge)
     tokens           -> tokens spent                    (token_usage)
 

@@ -243,7 +243,11 @@ HAPPY_CASES = [
     ("/rag/precision_at_k", {"metadata": RAG_IDS}, 2 / 3),  # 2 relevant of 3 retrieved
     ("/rag/ndcg_at_k", {"metadata": RAG_IDS}, 1.0),  # relevant docs ranked first
     ("/rag/faithfulness", {"output": "alpha delta", "retrieved_context": ["alpha beta gamma"]}, 0.5),
-    ("/rag/consistency", {"output": "alpha delta", "retrieved_context": ["alpha beta gamma"]}, 0.5),
+    (
+        "/rag/consistency",
+        {"input": "q", "metadata": {"repeated_outputs": ["alpha beta", "alpha gamma"]}},
+        0.5,  # one pair: |{alpha,beta} ∩ {alpha,gamma}| / 2
+    ),
 ]
 
 T2S_HAPPY_CASES = [
@@ -268,8 +272,8 @@ T2S_HAPPY_CASES = [
     ),
     (
         "/t2s/consistency",
-        {"input": "q", "output": "3", "metadata": {"execution_result": [{"count": 3}]}},
-        1.0,
+        {"input": "q", "metadata": {"repeated_sql": ["SELECT name FROM emp", "SELECT id FROM emp"]}},
+        0.75,  # one pair: 3 of 4 response tokens shared
     ),
 ]
 
@@ -351,15 +355,30 @@ def test_rate_metric_batch_uses_wilson_pass_rate(client):
     assert body["aggregate"]["ci_high"] == pytest.approx(hi)
 
 
-def test_consistency_accepts_repeated_runs_and_returns_final_mean(client):
-    runs = [
-        {"output": "alpha beta", "retrieved_context": ["alpha beta gamma"]},  # 1.0
-        {"output": "alpha delta", "retrieved_context": ["alpha beta gamma"]},  # 0.5
-        {"output": "delta epsilon", "retrieved_context": ["alpha beta gamma"]},  # 0.0
+def test_consistency_scores_query_groups_of_repeated_runs(client):
+    groups = [
+        {"metadata": {"repeated_outputs": ["alpha beta", "alpha beta"]}},  # 1.0
+        {"metadata": {"repeated_outputs": ["alpha beta", "alpha gamma"]}},  # 0.5
+        {"metadata": {"repeated_outputs": ["delta one", "echo two"]}},  # 0.0
     ]
-    body = client.post("/rag/consistency", json={"contexts": runs}).json()
-    assert body["n"] == 3
+    body = client.post("/rag/consistency", json={"contexts": groups}).json()
+    assert body["n"] == 3 and body["n_errors"] == 0
+    assert [r["score"] for r in body["results"]] == [
+        pytest.approx(1.0), pytest.approx(0.5), pytest.approx(0.0),
+    ]
+    assert body["results"][0]["detail"]["n_runs"] == 2
     assert body["aggregate"]["value"] == pytest.approx(0.5)
+
+
+def test_t2s_consistency_no_longer_accepts_digest_params(client):
+    pytest.importorskip("sqlglot")
+    resp = client.post(
+        "/t2s/consistency",
+        json={"contexts": [{"metadata": {"repeated_sql": ["SELECT 1", "SELECT 1"]}}],
+              "params": {"sample_rows": 3}},
+    )
+    assert resp.status_code == 422
+    assert "sample_rows" in resp.json()["detail"]
 
 
 def test_judge_metrics_score_each_item_exactly_once():
