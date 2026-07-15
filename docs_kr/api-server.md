@@ -19,6 +19,10 @@ uv sync --extra server --extra t2s      # or: pip install 'agent-eval[server,t2s
 uv run agent-eval-serve                 # 127.0.0.1:8000; --host/--port/--workers
 ```
 
+로컬 실행 시 `agent-eval-serve`는 현재 디렉터리에 `./.env` 파일(`KEY=VALUE`, 이미 설정된
+환경변수가 우선)이 있으면 함께 읽는다 — 다른 경로는 `--env-file`로 지정하고, `--env-file ''`로
+끌 수 있다.
+
 Docker:
 
 ```bash
@@ -105,6 +109,7 @@ PoLL 패널이면 항목마다 패널 크기만큼 호출된다). `n`은 전송�
 | 변수 | 의미 |
 |---|---|
 | `AGENT_EVAL_JUDGE_FACTORY` | `module:attr` 또는 `path/to/file.py:attr` — YAML의 `judge.factory` 규약 그대로다. 백엔드, 인자 없는 콜러블, 또는 리스트(= PoLL 심판 패널)를 반환할 수 있다. 다른 모든 설정에 우선한다. |
+| `AGENT_EVAL_JUDGE_PROVIDER` | `_BASE_URL`을 직접 지정하지 않았을 때 쓰는 프리셋 전환 스위치: `anthropic`(Anthropic의 OpenAI 호환 엔드포인트를 통한 Claude, `ANTHROPIC_API_KEY` 필요) 또는 `openai`(`OPENAI_API_KEY` 필요). `_MODEL`은 프리셋의 기본 모델을 덮어쓴다. |
 | `AGENT_EVAL_JUDGE_BASE_URL` | OpenAI 호환 베이스 URL(예: `http://vllm.internal:8000/v1`). `_MODEL`이 함께 필요하다. |
 | `AGENT_EVAL_JUDGE_MODEL` | `{base_url}/chat/completions`로 보내는 모델 이름. |
 | `AGENT_EVAL_JUDGE_API_KEY` | 선택적인 `Authorization: Bearer` 토큰. |

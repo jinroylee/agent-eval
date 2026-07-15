@@ -540,3 +540,70 @@ def test_factory_env_drives_the_app_judge(monkeypatch, tmp_path):
     # PoLL panel: mean of (1.0, 0.5) with agreement 1 - spread
     assert body["results"][0]["score"] == pytest.approx(0.75)
     assert body["results"][0]["confidence"] == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- provider presets + .env
+def test_provider_preset_builds_openai_compatible_judge():
+    from agent_eval.server import judge as judge_mod
+
+    r = judge_mod.resolve_judge_from_env(
+        environ={"AGENT_EVAL_JUDGE_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "k"}
+    )
+    assert r.kind == "openai_compatible"
+    assert "api.anthropic.com" in r.detail and "provider=anthropic" in r.detail
+
+    r = judge_mod.resolve_judge_from_env(
+        environ={"AGENT_EVAL_JUDGE_PROVIDER": "openai", "OPENAI_API_KEY": "k"}
+    )
+    assert "api.openai.com" in r.detail and "gpt-4o-mini" in r.detail
+
+
+def test_provider_preset_respects_model_override_and_needs_its_key():
+    from agent_eval.server import judge as judge_mod
+
+    r = judge_mod.resolve_judge_from_env(
+        environ={
+            "AGENT_EVAL_JUDGE_PROVIDER": "openai",
+            "AGENT_EVAL_JUDGE_MODEL": "my-model",
+            "OPENAI_API_KEY": "k",
+        }
+    )
+    assert r.detail.startswith("my-model @ ")
+
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        judge_mod.resolve_judge_from_env(environ={"AGENT_EVAL_JUDGE_PROVIDER": "anthropic"})
+    with pytest.raises(RuntimeError, match="anthropic"):  # error lists the valid providers
+        judge_mod.resolve_judge_from_env(environ={"AGENT_EVAL_JUDGE_PROVIDER": "gemini"})
+
+
+def test_explicit_base_url_wins_over_provider():
+    from agent_eval.server import judge as judge_mod
+
+    r = judge_mod.resolve_judge_from_env(
+        environ={
+            "AGENT_EVAL_JUDGE_PROVIDER": "anthropic",
+            "ANTHROPIC_API_KEY": "k",
+            "AGENT_EVAL_JUDGE_BASE_URL": "http://gateway.internal/v1",
+            "AGENT_EVAL_JUDGE_MODEL": "internal-model",
+        }
+    )
+    assert "gateway.internal" in r.detail and "provider=" not in r.detail
+
+
+def test_load_env_file_setdefault_semantics(tmp_path, monkeypatch):
+    import os
+
+    from agent_eval.server import judge as judge_mod
+
+    monkeypatch.setenv("AE_DEMO_EXISTING", "shell-wins")
+    monkeypatch.delenv("AE_DEMO_NEW", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# comment\n\nAE_DEMO_EXISTING=file-value\nAE_DEMO_NEW=hello\nBROKEN LINE\n",
+        encoding="utf-8",
+    )
+    assert judge_mod.load_env_file(env_file) is True
+    assert os.environ["AE_DEMO_EXISTING"] == "shell-wins"  # already-set wins
+    assert os.environ["AE_DEMO_NEW"] == "hello"
+    monkeypatch.delenv("AE_DEMO_NEW")
+    assert judge_mod.load_env_file(tmp_path / "missing.env") is False

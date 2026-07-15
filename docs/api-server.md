@@ -20,6 +20,9 @@ uv sync --extra server --extra t2s      # or: pip install 'agent-eval[server,t2s
 uv run agent-eval-serve                 # 127.0.0.1:8000; --host/--port/--workers
 ```
 
+For local runs, `agent-eval-serve` also loads a `./.env` file (`KEY=VALUE`; already-set
+variables win) when present — point `--env-file` elsewhere, or pass `--env-file ''` to disable.
+
 Docker:
 
 ```bash
@@ -104,6 +107,7 @@ that actually scored (errored items are excluded from the denominator).
 | Variable | Meaning |
 |---|---|
 | `AGENT_EVAL_JUDGE_FACTORY` | `module:attr` or `path/to/file.py:attr` — the YAML `judge.factory` convention. May return a backend, a zero-arg callable, or a list (= PoLL panel). Wins over everything. |
+| `AGENT_EVAL_JUDGE_PROVIDER` | Preset switch when no explicit `_BASE_URL` is set: `anthropic` (Claude via Anthropic's OpenAI-compatible endpoint; needs `ANTHROPIC_API_KEY`) or `openai` (needs `OPENAI_API_KEY`). `_MODEL` overrides the preset's default model. |
 | `AGENT_EVAL_JUDGE_BASE_URL` | OpenAI-compatible base URL (e.g. `http://vllm.internal:8000/v1`). Requires `_MODEL`. |
 | `AGENT_EVAL_JUDGE_MODEL` | Model name sent to `{base_url}/chat/completions`. |
 | `AGENT_EVAL_JUDGE_API_KEY` | Optional `Authorization: Bearer` token. |
