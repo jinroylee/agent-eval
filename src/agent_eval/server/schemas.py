@@ -80,6 +80,7 @@ class AggregateOut(BaseModel):
     n_errors: int
     aggregation: str
     higher_is_better: bool
+    breakdown: dict[str, float] | None = None  # per-criterion means (criteria-based judge metrics)
 
     @classmethod
     def from_aggregate(cls, a: MetricAggregate) -> AggregateOut:
@@ -87,6 +88,7 @@ class AggregateOut(BaseModel):
             metric=a.metric, value=a.value, ci_low=a.ci_low, ci_high=a.ci_high,
             n=a.n, n_errors=a.n_errors, aggregation=str(a.aggregation),
             higher_is_better=a.higher_is_better,
+            breakdown=dict(a.breakdown) if a.breakdown else None,
         )
 
 

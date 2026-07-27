@@ -39,22 +39,26 @@ judge, and optional-capability availability (`t2s`/`bertscore`) at `GET /health`
 
 | Path | Metric | Each context needs | `params` |
 |---|---|---|---|
-| `POST /common/llm_judge` | `llm_judge` | `input`, `output` (opt `expected`) | `criteria`, `scale` |
+| `POST /common/llm_judge` | `llm_judge` | `input`, `output` (opt `expected`) | `criteria`, `scale`, `system_prompt` |
 | `POST /common/bertscore` | `bertscore` | `output`, `expected` | `lang`, `model_type`, `rescale_with_baseline` |
 | `POST /rag/recall_at_k` | `recall_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/precision_at_k` | `precision_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/ndcg_at_k` | `ndcg_at_k` | same (+ opt `.relevance`) | `k` |
-| `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | — |
-| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (opt `input`) | — |
+| `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | `system_prompt` |
+| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (opt `input`) | `system_prompt` |
 | `POST /t2s/soft_f1` | `soft_f1` | `metadata.execution_result`, `.gold_execution_result` | `result_policy` |
 | `POST /t2s/component_match` | `component_match` | `metadata.sql`, `.gold_sql` | `dialect` |
 | `POST /t2s/ast_valid` | `ast_valid` | `metadata.sql` | `dialect` |
-| `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (opt `input`) | `sample_rows`, `max_distinct`, `max_columns` |
-| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (opt `input`) | — |
+| `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (opt `input`) | `sample_rows`, `max_distinct`, `max_columns`, `system_prompt` |
+| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (opt `input`) | `system_prompt` |
 
 `result_policy` accepts the `ResultSetPolicy` fields: `row_order` (`ignore|strict`), `duplicates`
 (`keep|dedup`), `nulls` (`distinct|coalesce`), `column_order` (`ignore|strict`), `float_tolerance`.
-An explicit JSON `null` for any param means "use the default" — same as omitting the key.
+`criteria` (llm_judge) is a list — each entry a name string or `{name, description}` — for
+per-criteria judging (the default), or a plain string rubric for one holistic call.
+`system_prompt` (judge endpoints) replaces the judge persona preamble for this request (see
+[judges.md](judges.md)). An explicit JSON `null` for any param means "use the default" — same as
+omitting the key.
 
 ## Request / response
 
@@ -92,9 +96,12 @@ curl -s -X POST http://127.0.0.1:8000/rag/recall_at_k \
 The aggregate is computed by the library's own `evaluate()` — pass rate with a Wilson interval
 for binary (RATE) metrics, mean with a cluster-robust CI for graded (MEAN) metrics (set
 `metadata.cluster_id` on non-iid items). Every item is scored exactly once; judge endpoints run
-the judge once per posted context — one LLM call per configured judge, so a PoLL panel
-multiplies that by its size. `n` counts posted contexts; `aggregate.n` counts only the items
-that actually scored (errored items are excluded from the denominator).
+the judge once per posted context — one LLM call per configured judge (llm_judge's per-criteria
+default makes one such call **per criterion**, 5 per context), and a PoLL panel multiplies that
+by its size. `n` counts posted contexts; `aggregate.n` counts only the items that actually
+scored (errored items are excluded from the denominator). When the metric reports per-criterion
+scores (llm_judge's default), each item's `detail.criteria` carries them and the aggregate gains
+a `breakdown` field with the per-criterion means.
 
 ## Error model
 
@@ -114,6 +121,7 @@ that actually scored (errored items are excluded from the denominator).
 | `AGENT_EVAL_JUDGE_MODEL` | Model name sent to `{base_url}/chat/completions`. |
 | `AGENT_EVAL_JUDGE_API_KEY` | Optional `Authorization: Bearer` token. |
 | `AGENT_EVAL_JUDGE_TIMEOUT` | Judge HTTP timeout in seconds (default 60). |
+| `AGENT_EVAL_JUDGE_SYSTEM_PROMPT` | Server-wide judge persona preamble (openai-compatible judge only; a request's `system_prompt` param overrides it). `GET /health` marks the judge with "custom system prompt" when set. |
 
 Nothing set → the deterministic lexical-overlap **stub** (offline; not a real judgment).
 `GET /health` reports which judge is active — check it before trusting judge-based scores.
@@ -122,7 +130,8 @@ Nothing set → the deterministic lexical-overlap **stub** (offline; not a real 
 
 - No auth/TLS — built for a closed network; front with a gateway if exposure matters.
 - No batch cap: memory and latency scale with `len(contexts)`; judge endpoints make one LLM call
-  per item per configured judge (a PoLL panel multiplies accordingly; the consistency endpoints
+  per item per configured judge (a PoLL panel multiplies accordingly; llm_judge's per-criteria
+  default multiplies by its criteria count — 5 calls per item; the consistency endpoints
   additionally multiply by their N(N−1)/2 run pairs). Scale out with
   `--workers` (scoring is synchronous per request).
 - `uvicorn[standard]` ships compiled wheels (`uvloop`, `httptools`, `watchfiles`, `websockets`).

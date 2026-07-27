@@ -9,6 +9,7 @@ agent_type: rag                  # plain | rag | t2s — 참고용(아무것도 
 defaults:                        # 공유 메트릭 기본값
   k: 5                           # recall/precision/ndcg의 고정 검색 깊이
   dialect: sqlite                # T2S SQL 다이얼렉트(dialect)
+  system_prompt: null            # 모든 judge 메트릭의 judge 페르소나(docs/judges.md 참고)
   result_set_policy:             # T2S 결과 집합(result set) 비교 의미론
     row_order: ignore            #   ignore | strict
     duplicates: keep             #   keep | dedup
@@ -61,7 +62,7 @@ suites:                          # 하나 이상의 명명된 평가
 | 섹션 | 용도 |
 |---|---|
 | `agent_type` | 라벨(`plain` / `rag` / `t2s`). 참고용 — 메트릭 집합은 스위트(Suite)에 나열된 대로 결정된다. |
-| `defaults` | 메트릭 팩토리에 주입되는 공유 파라미터: `k`, `dialect`, `result_set_policy`. 메트릭 자체의 `params`가 이를 재정의한다. |
+| `defaults` | 메트릭 팩토리에 주입되는 공유 파라미터: `k`, `dialect`, `result_set_policy`, `system_prompt`(모든 judge 메트릭의 judge 페르소나). 메트릭 자체의 `params`가 이를 재정의한다. |
 | `judge` | judge 기반 메트릭에 사용할 LLM judge 백엔드를 결정한다. [judges.md](judges.md) 참고. 생략 시 ⇒ 결정론적 스텁. |
 | `datasets` | 명명된 데이터셋. `field_map`은 소스 컬럼을 표준 필드에 투영한다(target ← source). |
 | `prediction` | `agent-eval predict`를 LangGraph에 연결한다. [langgraph-integration.md](langgraph-integration.md) 참고. |
@@ -73,6 +74,12 @@ suites:                          # 하나 이상의 명명된 평가
 
 ```yaml
 - {type: recall_at_k, name: recall_at_10, params: {k: 10}}
+- type: llm_judge
+  params:
+    system_prompt: "당신은 꼼꼼한 한국어 평가자입니다."   # judge 페르소나 재정의
+    criteria:                              # 기준별 판정(기준마다 judge 호출 1회);
+      - Accuracy                           #   일반 문자열 루브릭이면 종합 점수 1회 호출
+      - {name: Tone, description: "정중하고 전문적인 어조"}
 ```
 
 `type`은 메트릭을 선택한다(타입 + 파라미터는 [metrics.md](metrics.md) 참고). `name`은 리포팅 이름이다(기본값은

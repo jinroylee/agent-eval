@@ -29,12 +29,17 @@ They score the **final response** (`output`), so they work for plain, RAG, and T
 
 ### `llm_judge`
 
-Scores the response on **Completeness, Clarity, Usefulness, Relevance, and Friendliness** (one
-holistic 1–5 score, normalized to `[0, 1]`). With `expected` set it grades against that reference;
-without it, intrinsic quality. Needs a judge backend — see [judges.md](judges.md); it falls back to a
-deterministic offline stub when none is configured. Params: `criteria` (override the rubric),
-`scale` (default `(1, 5)`). Supports a **PoLL panel** (multiple judges averaged) — set
-`judge.factory` to a function returning a list.
+Scores the response on **Completeness, Clarity, Usefulness, Relevance, and Friendliness**. By
+default each criterion is judged **separately** — one focused judge call per criterion (5 per
+item; a PoLL panel multiplies that): the metric score is the mean of the per-criterion scores
+(each a 1–5 grade normalized to `[0, 1]`), the breakdown rides in `detail['criteria']` per item,
+and `evaluate` rolls it up into a per-criterion `breakdown` shown in reports. With `expected` set
+it grades against that reference; without it, intrinsic quality. Needs a judge backend — see
+[judges.md](judges.md); it falls back to a deterministic offline stub when none is configured.
+Params: `criteria` — a list (each entry a name or `{name, description}`) for per-criteria judging,
+or a **plain string rubric** for a single holistic call; `scale` (default `(1, 5)`);
+`system_prompt` (override the judge persona — [judges.md](judges.md)). Supports a **PoLL panel**
+(multiple judges averaged per criterion) — set `judge.factory` to a function returning a list.
 
 ### `bertscore`
 
@@ -68,8 +73,8 @@ returned (best first), `metadata['relevant_ids']` is the gold set. `k` is fixed 
 must be *supported* by the retrieved chunks) is judge-based against the evidence. `consistency` is
 judge-based **across repeated runs**: run the same query N times (`prediction.n_runs`) and every
 pair of answers is judged for agreement — the score is the pairwise mean, at N(N−1)/2 judge calls
-per query. `ndcg_at_k` uses binary relevance by
-default; pass `metadata['relevance']` (`{id: gain}`) for graded relevance.
+per query. Both take a `system_prompt` param (see [judges.md](judges.md)). `ndcg_at_k` uses binary
+relevance by default; pass `metadata['relevance']` (`{id: gain}`) for graded relevance.
 
 ---
 
@@ -105,8 +110,8 @@ result set (per-column aggregates + a small sample), never the raw rows, so it s
 size. Result-set comparison is explicit and configurable — `defaults.result_set_policy` controls row
 order, duplicates, NULLs, and float tolerance (the documented silent-failure source for execution
 metrics). Params: `soft_f1` takes `result_policy`; `component_match` / `ast_valid` take `dialect`;
-`t2s_faithfulness` takes `sample_rows` / `max_distinct` / `max_columns` (`t2s_consistency`
-takes none — it compares the repeated SQLs pairwise).
+`t2s_faithfulness` takes `sample_rows` / `max_distinct` / `max_columns`; both judge metrics
+(`t2s_faithfulness`, `t2s_consistency`) also take `system_prompt` (see [judges.md](judges.md)).
 
 > The T2S example ([`examples/t2s`](../examples/t2s/)) is built to show the division of labor:
 > a paraphrased query keeps `soft_f1` at 1.0 while `component_match` dips; a dropped `WHERE` keeps

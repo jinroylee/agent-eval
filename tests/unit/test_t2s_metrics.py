@@ -10,7 +10,7 @@ encodings are coerced on read. `component_match` / `ast_valid` are AST-only and 
 import json
 
 from agent_eval.core.contracts import EvalContext, MetaKey
-from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
+from agent_eval.judges.backend import FunctionJudge, JudgeVerdict, lexical_overlap_judge
 from agent_eval.metrics.t2s import (
     AstValid,
     ComponentMatch,
@@ -265,3 +265,31 @@ def test_t2s_faithfulness_feeds_bounded_digest_to_judge():
     joined = "\n".join(captured["context"])
     assert "10000 row(s)" in joined
     assert len(joined) < 2000  # the 10k rows were summarized, not dumped into the judge
+
+
+class _SpyJudge:
+    """Records every JudgeRequest; returns a fixed verdict."""
+
+    def __init__(self, score: float = 1.0):
+        self.requests = []
+        self.score = score
+
+    def evaluate(self, request):
+        self.requests.append(request)
+        return JudgeVerdict(self.score, reason="spy")
+
+
+def test_t2s_faithfulness_stamps_system_prompt():
+    spy = _SpyJudge()
+    T2SFaithfulness(spy, system_prompt="Persona.").score(
+        EvalContext(input="q", output="3", metadata={MetaKey.EXECUTION_RESULT: [{"count": 3}]})
+    )
+    assert spy.requests[0].system_prompt == "Persona."
+
+
+def test_t2s_consistency_stamps_system_prompt_on_every_pair():
+    spy = _SpyJudge()
+    T2SConsistency(spy, system_prompt="Persona.").score(
+        EvalContext(input="q", metadata={MetaKey.REPEATED_SQL: ["SELECT 1", "SELECT 2"]})
+    )
+    assert spy.requests and all(r.system_prompt == "Persona." for r in spy.requests)

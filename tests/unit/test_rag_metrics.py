@@ -3,8 +3,20 @@
 import math
 
 from agent_eval.core.contracts import EvalContext, MetaKey
-from agent_eval.judges.backend import FunctionJudge, lexical_overlap_judge
+from agent_eval.judges.backend import FunctionJudge, JudgeVerdict, lexical_overlap_judge
 from agent_eval.metrics.rag import Faithfulness, NdcgAtK, PrecisionAtK, RecallAtK, ResponseConsistency
+
+
+class _SpyJudge:
+    """Records every JudgeRequest; returns a fixed verdict."""
+
+    def __init__(self, score: float = 1.0):
+        self.requests = []
+        self.score = score
+
+    def evaluate(self, request):
+        self.requests.append(request)
+        return JudgeVerdict(self.score, reason="spy")
 
 
 def _ctx(retrieved, relevant, **extra):
@@ -92,3 +104,20 @@ def test_consistency_panel_reports_mean_agreement():
 def test_faithfulness_requires_context():
     judge = FunctionJudge(lexical_overlap_judge)
     assert Faithfulness(judge).score(EvalContext(input="q", output="a")).error  # no retrieved_context
+
+
+def test_faithfulness_stamps_system_prompt():
+    spy = _SpyJudge()
+    Faithfulness(spy, system_prompt="Persona.").score(
+        EvalContext(input="q", output="a", retrieved_context=("c",))
+    )
+    assert spy.requests[0].system_prompt == "Persona."
+
+
+def test_consistency_stamps_system_prompt_on_every_pair():
+    spy = _SpyJudge()
+    ResponseConsistency(spy, system_prompt="Persona.").score(
+        EvalContext(input="q", metadata={"repeated_outputs": ["a", "b", "c"]})
+    )
+    assert len(spy.requests) == 3  # 3 runs -> 3 pairs
+    assert all(r.system_prompt == "Persona." for r in spy.requests)

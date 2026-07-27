@@ -22,6 +22,7 @@ class JudgeRequest:
     reference: str = ""              # gold answer, if grading against ground truth
     context: Sequence[str] = ()      # evidence (retrieved chunks, executed rows)
     scale: tuple[int, int] = (1, 5)  # integer score range to ask for
+    system_prompt: str = ""          # persona/framing preamble; "" → the backend's default
 
 @dataclass(frozen=True)
 class JudgeVerdict:
@@ -41,6 +42,23 @@ class JudgeVerdict:
   중첩)이다. 실제 judge가 아니라 대체물이며, 점수는 조악하다.
 
 judge가 설정되지 않으면, judge 메트릭은 어휘 스텁으로 폴백한다.
+
+## 시스템 프롬프트
+
+모든 judge 프롬프트는 페르소나/프레이밍 서문으로 시작한다 — 기본값은
+`"You are a strict, impartial evaluator."`이다. judge가 설정되는 곳이라면 어디서든 교체할 수 있다
+(더 구체적인 쪽이 이긴다):
+
+1. **메트릭 단위** — judge 기반 메트릭의 `params: {system_prompt: ...}`, 또는 설정의
+   `defaults.system_prompt`로 모든 judge 메트릭에 한 번에 지정.
+2. **백엔드 단위** — judge 팩토리를 작성할 때 `LLMJudge(complete, system_prompt=...)`.
+3. 내장 기본값.
+
+이 커스터마이징은 서문만 교체한다: 메트릭의 루브릭(`instruction`)과 `SCORE:`/`REASON:` 형식 계약은
+항상 그 뒤에 붙으므로, 커스텀 시스템 프롬프트가 점수 파싱을 깨뜨릴 수는 없다. `FunctionJudge`와
+오프라인 스텁은 `request.system_prompt`를 보긴 하지만 무시한다. API 서버에서는 요청의
+`system_prompt` 파라미터를 쓰거나, 서버 전역 기본값으로 `AGENT_EVAL_JUDGE_SYSTEM_PROMPT`를
+설정한다([api-server.md](api-server.md) 참고).
 
 ## 실제 Claude judge 연결하기
 
@@ -106,7 +124,7 @@ judge:
 
 | 메트릭 | 채점 대상 |
 |---|---|
-| `llm_judge` | 완전성, 명확성, 유용성, 관련성, 친절함(기준 답이 주어지면 그에 대비하여) |
+| `llm_judge` | 완전성, 명확성, 유용성, 관련성, 친절함 — 기본값으로 각 기준을 **개별적으로** 판정한다(기준별 점수는 `detail['criteria']`에 담기고, 전체 점수는 평균; `criteria`를 일반 문자열로 주면 종합 점수 하나). 기준 답이 주어지면 그에 대비하여 채점한다. |
 | `faithfulness` | 답변의 모든 주장이 검색된 청크에 의해 **뒷받침되는지** |
 | `consistency` | 같은 질문을 반복 실행했을 때 **같은 답**을 주는지(쌍별) |
 | `t2s_faithfulness` | NL 답변이 **실행된 쿼리 결과**를 충실하게 보고하는지 |

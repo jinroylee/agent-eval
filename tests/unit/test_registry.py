@@ -45,3 +45,14 @@ def test_unknown_type_raises():
 
 def test_default_registry_has_full_catalog():
     assert set(default_registry().types()) == EXPECTED_TYPES
+
+
+def test_judge_metrics_resolve_system_prompt_from_defaults_and_params():
+    reg = default_registry()
+    ctx = BuildContext(defaults={"system_prompt": "Global persona."})
+    assert reg.build("faithfulness", ctx).system_prompt == "Global persona."
+    assert reg.build("llm_judge", ctx).system_prompt == "Global persona."
+    override = reg.build(
+        {"type": "faithfulness", "name": "f", "params": {"system_prompt": "Metric persona."}}, ctx
+    )
+    assert override.system_prompt == "Metric persona."

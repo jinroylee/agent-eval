@@ -23,7 +23,12 @@ from agent_eval.core.contracts import CostClass, EvalContext, MetaKey, MetricRes
 from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import BuildContext, MetricRegistry
 from agent_eval.judges.backend import JudgeRequest
-from agent_eval.metrics.common import JudgeMetric, SelfConsistencyMetric, resolve_judge
+from agent_eval.metrics.common import (
+    JudgeMetric,
+    SelfConsistencyMetric,
+    judge_system_prompt,
+    resolve_judge,
+)
 
 # --------------------------------------------------------------------------- retrieval (GT)
 
@@ -114,6 +119,7 @@ class _ContextJudgeMetric(JudgeMetric):
             instruction=self._rubric,
             response=str(ctx.output),
             context=tuple(ctx.retrieved_context),
+            system_prompt=self.system_prompt,
         )
 
 
@@ -150,5 +156,15 @@ def register(registry: MetricRegistry) -> None:
     registry.register("recall_at_k", lambda p, ctx: RecallAtK(_k(p, ctx)))
     registry.register("precision_at_k", lambda p, ctx: PrecisionAtK(_k(p, ctx)))
     registry.register("ndcg_at_k", lambda p, ctx: NdcgAtK(_k(p, ctx)))
-    registry.register("faithfulness", lambda p, ctx: Faithfulness(resolve_judge(ctx), ctx.panel))
-    registry.register("consistency", lambda p, ctx: ResponseConsistency(resolve_judge(ctx), ctx.panel))
+    registry.register(
+        "faithfulness",
+        lambda p, ctx: Faithfulness(
+            resolve_judge(ctx), ctx.panel, system_prompt=judge_system_prompt(p, ctx)
+        ),
+    )
+    registry.register(
+        "consistency",
+        lambda p, ctx: ResponseConsistency(
+            resolve_judge(ctx), ctx.panel, system_prompt=judge_system_prompt(p, ctx)
+        ),
+    )

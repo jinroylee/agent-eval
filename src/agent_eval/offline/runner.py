@@ -10,7 +10,7 @@ Aggregation is per-metric (``Metric.aggregation``) and small-sample-correct:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from scipy.stats import norm
 
@@ -33,6 +33,21 @@ def evaluate(suite: Suite, dataset: Iterable[EvalContext], alpha: float = 0.05) 
     aggregates = [_aggregate(m, per_metric[m.name], alpha) for m in suite.metrics]
     verdict: GateVerdict = decide_gate(aggregates, suite.gate)
     return SuiteResult(suite.agent_type, suite.category, len(contexts), aggregates, verdict)
+
+
+def _criteria_breakdown(
+    valid: Sequence[tuple[MetricResult, EvalContext]],
+) -> dict[str, float] | None:
+    """Mean per criterion over the items whose ``detail['criteria']`` carries it (else None)."""
+    per_criterion: dict[str, list[float]] = {}
+    for r, _ in valid:
+        crit = r.detail.get("criteria")
+        if isinstance(crit, Mapping):
+            for name, score in crit.items():
+                per_criterion.setdefault(str(name), []).append(float(score))
+    if not per_criterion:
+        return None
+    return {name: sum(vs) / len(vs) for name, vs in per_criterion.items()}
 
 
 def _aggregate(
@@ -63,4 +78,6 @@ def _aggregate(
         else:
             lo = max(0.0, lo)
 
-    return MetricAggregate(metric.name, value, lo, hi, n, n_errors, agg, hib)
+    return MetricAggregate(
+        metric.name, value, lo, hi, n, n_errors, agg, hib, _criteria_breakdown(valid)
+    )

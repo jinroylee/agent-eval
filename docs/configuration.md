@@ -11,6 +11,7 @@ agent_type: rag                  # plain | rag | t2s — informational (drives n
 defaults:                        # shared metric defaults
   k: 5                           # fixed retrieval depth for recall/precision/ndcg
   dialect: sqlite                # T2S SQL dialect
+  system_prompt: null            # judge persona for ALL judge metrics (see docs/judges.md)
   result_set_policy:             # T2S result-set comparison semantics
     row_order: ignore            #   ignore | strict
     duplicates: keep             #   keep | dedup
@@ -63,7 +64,7 @@ suites:                          # one or more named evaluations
 | Section | Purpose |
 |---|---|
 | `agent_type` | A label (`plain` / `rag` / `t2s`). Informational — the metric set is whatever the suites list. |
-| `defaults` | Shared params injected into metric factories: `k`, `dialect`, `result_set_policy`. A metric's own `params` override these. |
+| `defaults` | Shared params injected into metric factories: `k`, `dialect`, `result_set_policy`, `system_prompt` (judge persona for every judge metric). A metric's own `params` override these. |
 | `judge` | Resolves the LLM judge backend for judge-based metrics. See [judges.md](judges.md). Omitted ⇒ deterministic stub. |
 | `datasets` | Named datasets. `field_map` projects source columns onto canonical fields (target ← source). |
 | `prediction` | Wires `agent-eval predict` to your LangGraph. See [langgraph-integration.md](langgraph-integration.md). |
@@ -75,6 +76,12 @@ A metric in a suite is either a bare type string (`recall_at_k`) or a dict:
 
 ```yaml
 - {type: recall_at_k, name: recall_at_10, params: {k: 10}}
+- type: llm_judge
+  params:
+    system_prompt: "You are a meticulous Korean-speaking evaluator."   # judge persona override
+    criteria:                              # per-criteria judging (one judge call per criterion);
+      - Accuracy                           #   a plain string rubric = one holistic call instead
+      - {name: Tone, description: "polite, professional"}
 ```
 
 `type` selects the metric (see [metrics.md](metrics.md) for types + params); `name` is the reporting

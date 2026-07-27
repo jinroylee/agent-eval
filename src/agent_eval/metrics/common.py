@@ -8,14 +8,16 @@
 | ``token_usage`` | no | ``metadata['tokens']``                   | mean (lower=better) |
 
 ``llm_judge`` needs a configured judge backend (``defaults.judge`` in the config, or it falls back
-to a deterministic token-overlap stub so examples run offline). This module also exposes
-:class:`JudgeMetric`, the shared base the RAG/T2S judge metrics subclass.
+to a deterministic token-overlap stub so examples run offline); by default it judges each quality
+criterion separately and reports the per-criterion breakdown in ``detail['criteria']``. This module
+also exposes :class:`JudgeMetric`, the shared base the RAG/T2S judge metrics subclass.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from itertools import combinations
+from typing import Any
 
 from agent_eval.core.contracts import Aggregation, CostClass, EvalContext, MetaKey, MetricResult
 from agent_eval.core.metric import BaseMetric
@@ -36,6 +38,54 @@ DEFAULT_QUALITY_RUBRIC = (
     "Give a single holistic score."
 )
 
+# The same five criteria in structured form — the default: each is judged SEPARATELY (one focused
+# judge call per criterion) and the per-criterion scores ride in ``detail['criteria']``.
+DEFAULT_QUALITY_CRITERIA: tuple[dict[str, str], ...] = (
+    {"name": "Completeness", "description": "covers what was asked"},
+    {"name": "Clarity", "description": "easy to understand"},
+    {"name": "Usefulness", "description": "actionable, on-point"},
+    {"name": "Relevance", "description": "stays on topic"},
+    {"name": "Friendliness", "description": "appropriate, helpful tone"},
+)
+
+
+def _normalize_criteria(criteria: str | Sequence) -> str | tuple[dict[str, str], ...]:
+    """A string is a holistic rubric (single judge call); a sequence becomes the per-criteria form."""
+    if isinstance(criteria, str):
+        return criteria
+    if not isinstance(criteria, Sequence):
+        raise TypeError(f"criteria must be a string or a list of criteria; got {type(criteria).__name__}")
+    if not criteria:
+        raise ValueError("criteria list must not be empty")
+    normalized: list[dict[str, str]] = []
+    for entry in criteria:
+        name: object
+        description: object
+        if isinstance(entry, str):
+            name, description = entry, ""
+        elif isinstance(entry, Mapping):
+            name, description = entry.get("name"), entry.get("description", "")
+        else:
+            raise TypeError(f"each criterion must be a string or a mapping with a 'name'; got {entry!r}")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"criterion needs a non-empty string 'name': {entry!r}")
+        if not isinstance(description, str):
+            raise ValueError(f"criterion 'description' must be a string: {entry!r}")
+        normalized.append({"name": name.strip(), "description": description.strip()})
+    names = [c["name"] for c in normalized]
+    if len(set(names)) != len(names):
+        raise ValueError(f"criteria names must be unique: {names}")
+    return tuple(normalized)
+
+
+def _criterion_rubric(name: str, description: str) -> str:
+    qualifier = f" ({description})" if description else ""
+    return (
+        "Rate the RESPONSE TO EVALUATE as an answer to the USER QUESTION on one criterion only: "
+        f"{name}{qualifier}. If a REFERENCE ANSWER is given, judge how well the response matches "
+        f"its substance on this criterion. Score only {name}; ignore all other aspects of quality."
+    )
+
 
 # --------------------------------------------------------------------------- judge base
 class JudgeMetric(BaseMetric):
@@ -48,9 +98,14 @@ class JudgeMetric(BaseMetric):
     cost_class = CostClass.EXPENSIVE
     aggregation = Aggregation.MEAN
 
-    def __init__(self, backend: JudgeBackend, panel: Sequence[JudgeBackend] = ()) -> None:
+    def __init__(
+        self, backend: JudgeBackend, panel: Sequence[JudgeBackend] = (), system_prompt: str = ""
+    ) -> None:
+        if not isinstance(system_prompt, str):
+            raise TypeError(f"system_prompt must be a string; got {type(system_prompt).__name__}")
         self.backend = backend
         self.panel = list(panel)
+        self.system_prompt = system_prompt
 
     def build_request(self, ctx: EvalContext) -> JudgeRequest:
         raise NotImplementedError
@@ -101,6 +156,7 @@ class SelfConsistencyMetric(JudgeMetric):
             request = JudgeRequest(
                 instruction=self._rubric, question=str(ctx.input),
                 response=runs[i], reference=runs[j],
+                system_prompt=self.system_prompt,
             )
             if len(judges) > 1:
                 score, agreement = poll_pointwise(judges, request)
@@ -117,10 +173,15 @@ class SelfConsistencyMetric(JudgeMetric):
 
 
 class LLMJudgeMetric(JudgeMetric):
-    """Subjective quality of the final response (Completeness/Clarity/Usefulness/Relevance/Friendliness).
+    """Subjective quality of the final response.
 
-    Works with ground truth (set ``expected``) or without it. Confined to subjective quality — never
-    use a judge to decide objective correctness (that's what the RAG/T2S grounded metrics are for).
+    By default every criterion in ``DEFAULT_QUALITY_CRITERIA`` (Completeness/Clarity/Usefulness/
+    Relevance/Friendliness) is judged **separately** — one focused judge call per criterion (5 per
+    item; a panel multiplies that). The score is the mean of the per-criterion scores and
+    ``detail['criteria']`` carries the breakdown (rolled up per criterion by the offline runner).
+    Pass ``criteria`` as a plain string rubric for a single holistic call instead. Works with
+    ground truth (set ``expected``) or without it. Confined to subjective quality — never use a
+    judge to decide objective correctness (that's what the RAG/T2S grounded metrics are for).
     """
 
     name = "llm_judge"
@@ -130,21 +191,57 @@ class LLMJudgeMetric(JudgeMetric):
         self,
         backend: JudgeBackend,
         panel: Sequence[JudgeBackend] = (),
-        criteria: str = DEFAULT_QUALITY_RUBRIC,
+        criteria: str | Sequence = DEFAULT_QUALITY_CRITERIA,
         scale: tuple[int, int] = (1, 5),
+        system_prompt: str = "",
     ) -> None:
-        super().__init__(backend, panel)
-        self.criteria = criteria
+        super().__init__(backend, panel, system_prompt=system_prompt)
+        self.criteria = _normalize_criteria(criteria)
         self.scale = scale
 
-    def build_request(self, ctx: EvalContext) -> JudgeRequest:
+    def _request(self, ctx: EvalContext, instruction: str) -> JudgeRequest:
         return JudgeRequest(
-            instruction=self.criteria,
+            instruction=instruction,
             question=str(ctx.input),
             response=str(ctx.output),
             reference="" if ctx.expected is None else str(ctx.expected),
             scale=self.scale,
+            system_prompt=self.system_prompt,
         )
+
+    def build_request(self, ctx: EvalContext) -> JudgeRequest:
+        """The holistic (string-criteria) request; list criteria go through ``_compute`` directly."""
+        instruction = self.criteria if isinstance(self.criteria, str) else DEFAULT_QUALITY_RUBRIC
+        return self._request(ctx, instruction)
+
+    def _compute(self, ctx: EvalContext) -> MetricResult:
+        if isinstance(self.criteria, str):
+            return super()._compute(ctx)  # one holistic call; result shape unchanged
+        judges = [self.backend, *self.panel]
+        scores: dict[str, float] = {}
+        reasons: dict[str, str] = {}
+        agreements: dict[str, float] = {}
+        for criterion in self.criteria:
+            name = criterion["name"]
+            request = self._request(ctx, _criterion_rubric(name, criterion["description"]))
+            if len(judges) > 1:
+                score, agreement = poll_pointwise(judges, request)
+                agreements[name] = round(agreement, 4)
+            else:
+                verdict = self.backend.evaluate(request)
+                score = verdict.score
+                reasons[name] = verdict.reason
+            scores[name] = score
+        value = sum(scores.values()) / len(scores)
+        detail: dict[str, Any] = {"criteria": {k: round(v, 4) for k, v in scores.items()}}
+        if len(judges) > 1:
+            detail["agreement"] = agreements
+            detail["panel"] = len(judges)
+            confidence: float | None = sum(agreements.values()) / len(agreements)
+        else:
+            detail["reasons"] = reasons
+            confidence = None
+        return MetricResult(self.name, value, confidence=confidence, detail=detail)
 
 
 # --------------------------------------------------------------------------- bertscore
@@ -242,11 +339,23 @@ def resolve_judge(ctx: BuildContext) -> JudgeBackend:
     return ctx.judge or FunctionJudge(lexical_overlap_judge)
 
 
-def register(registry: MetricRegistry) -> None:
-    registry.register(
-        "llm_judge",
-        lambda p, ctx: LLMJudgeMetric(resolve_judge(ctx), ctx.panel, **p),
+def judge_system_prompt(p: dict, ctx: BuildContext) -> str:
+    """Judge persona resolution: metric ``params`` > ``defaults.system_prompt`` > "" (built-in)."""
+    value = p.get("system_prompt") or ctx.defaults.get("system_prompt") or ""
+    if not isinstance(value, str):
+        raise TypeError(f"system_prompt must be a string; got {type(value).__name__}")
+    return value
+
+
+def _build_llm_judge(p: dict, ctx: BuildContext) -> LLMJudgeMetric:
+    params = {k: v for k, v in p.items() if k != "system_prompt"}
+    return LLMJudgeMetric(
+        resolve_judge(ctx), ctx.panel, system_prompt=judge_system_prompt(p, ctx), **params
     )
+
+
+def register(registry: MetricRegistry) -> None:
+    registry.register("llm_judge", _build_llm_judge)
     registry.register("bertscore", lambda p, ctx: BertScore(**p))
     registry.register("p95_latency", lambda p, ctx: P95Latency())
     registry.register("token_usage", lambda p, ctx: TokenUsage())

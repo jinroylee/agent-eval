@@ -67,3 +67,38 @@ def test_poll_pointwise_single_judge_full_agreement():
 def test_poll_empty_panel_raises():
     with pytest.raises(ValueError):
         poll_pointwise([], REQ)
+
+
+def test_render_prompt_uses_default_system_prompt():
+    assert LLMJudge.render_prompt(REQ).startswith("You are a strict, impartial evaluator.")
+
+
+def test_system_prompt_precedence_request_over_backend_over_default():
+    seen: list[str] = []
+
+    def complete(prompt: str) -> str:
+        seen.append(prompt)
+        return "SCORE: 5"
+
+    plain = JudgeRequest(instruction="i", response="r")
+    LLMJudge(complete).evaluate(plain)
+    LLMJudge(complete, system_prompt="Backend persona.").evaluate(plain)
+    LLMJudge(complete, system_prompt="Backend persona.").evaluate(
+        JudgeRequest(instruction="i", response="r", system_prompt="Request persona.")
+    )
+    assert seen[0].startswith("You are a strict, impartial evaluator.")
+    assert seen[1].startswith("Backend persona.")
+    assert seen[2].startswith("Request persona.")
+
+
+def test_custom_system_prompt_keeps_rubric_and_format_contract():
+    seen: list[str] = []
+
+    def complete(prompt: str) -> str:
+        seen.append(prompt)
+        return "SCORE: 3"
+
+    LLMJudge(complete).evaluate(
+        JudgeRequest(instruction="rate the tone", response="r", system_prompt="Friendly persona.")
+    )
+    assert "rate the tone" in seen[0] and "SCORE:" in seen[0] and "REASON:" in seen[0]

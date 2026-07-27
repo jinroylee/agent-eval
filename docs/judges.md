@@ -22,6 +22,7 @@ class JudgeRequest:
     reference: str = ""              # gold answer, if grading against ground truth
     context: Sequence[str] = ()      # evidence (retrieved chunks, executed rows)
     scale: tuple[int, int] = (1, 5)  # integer score range to ask for
+    system_prompt: str = ""          # persona/framing preamble; "" → the backend's default
 
 @dataclass(frozen=True)
 class JudgeVerdict:
@@ -41,6 +42,23 @@ Three backends ship (`agent_eval.judges.backend`):
   with **no API key**. It's a stand-in, not a real judge — scores are crude.
 
 When no judge is configured, the judge metrics fall back to the lexical stub.
+
+## The system prompt
+
+Every judge prompt opens with a persona/framing preamble — by default
+`"You are a strict, impartial evaluator."`. You can replace it wherever a judge is configured
+(most specific wins):
+
+1. **Per metric** — `params: {system_prompt: ...}` on any judge-based metric, or
+   `defaults.system_prompt` in the config to set it for all judge metrics at once.
+2. **Per backend** — `LLMJudge(complete, system_prompt=...)` when writing a judge factory.
+3. The built-in default.
+
+The customization replaces the preamble only: the metric's rubric (`instruction`) and the
+`SCORE:`/`REASON:` format contract are always appended after it, so a custom system prompt can
+never break score parsing. `FunctionJudge` and the offline stub see `request.system_prompt` but
+ignore it. On the API server, pass the `system_prompt` request param, or set
+`AGENT_EVAL_JUDGE_SYSTEM_PROMPT` as the server-wide default (see [api-server.md](api-server.md)).
 
 ## Wiring a real Claude judge
 
@@ -107,7 +125,7 @@ param):
 
 | metric | grades |
 |---|---|
-| `llm_judge` | Completeness, Clarity, Usefulness, Relevance, Friendliness (vs. the reference if one is given) |
+| `llm_judge` | Completeness, Clarity, Usefulness, Relevance, Friendliness — each criterion judged **separately** by default (per-criterion scores in `detail['criteria']`, overall = mean; a plain-string `criteria` gives one holistic score). Vs. the reference if one is given. |
 | `faithfulness` | every claim in the answer is **supported by** the retrieved chunks |
 | `consistency` | repeated runs of the same query give **the same answer** (pairwise) |
 | `t2s_faithfulness` | the NL answer faithfully reports the **executed query result** |

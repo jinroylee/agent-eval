@@ -1,5 +1,7 @@
 """Offline runner: per-aggregation rollups (RATE/MEAN/P95), CIs, and the direction-aware gate."""
 
+import pytest
+
 from agent_eval.core.contracts import Aggregation, EvalContext, MetricResult
 from agent_eval.core.gate import GatePolicy
 from agent_eval.core.metric import BaseMetric
@@ -74,3 +76,35 @@ def test_require_pass_missing_metric_fails():
     data = _ds([("a", "a")])
     res = evaluate(Suite("p", "c", [Binary()], GatePolicy(require_pass=["nope"])), data)
     assert not res.verdict.passed
+
+
+class CriteriaJudge(BaseMetric):
+    name = "crit"
+
+    def _compute(self, ctx):
+        crit = ctx.metadata["crit"]
+        return MetricResult(self.name, sum(crit.values()) / len(crit), detail={"criteria": crit})
+
+
+def test_mean_aggregate_carries_criteria_breakdown():
+    data = [
+        EvalContext(input="q", metadata={"crit": {"Clarity": 0.8, "Tone": 0.6}}),
+        EvalContext(input="q", metadata={"crit": {"Clarity": 0.4, "Tone": 1.0}}),
+    ]
+    agg = evaluate(Suite("p", "c", [CriteriaJudge()], GatePolicy()), data).aggregates[0]
+    assert agg.breakdown == {"Clarity": pytest.approx(0.6), "Tone": pytest.approx(0.8)}
+
+
+def test_breakdown_averages_only_items_carrying_each_criterion():
+    data = [
+        EvalContext(input="q", metadata={"crit": {"Clarity": 1.0}}),
+        EvalContext(input="q", metadata={"crit": {"Clarity": 0.0, "Tone": 0.5}}),
+    ]
+    agg = evaluate(Suite("p", "c", [CriteriaJudge()], GatePolicy()), data).aggregates[0]
+    assert agg.breakdown == {"Clarity": pytest.approx(0.5), "Tone": pytest.approx(0.5)}
+
+
+def test_breakdown_absent_without_criteria_detail():
+    data = [EvalContext(input="q", metadata={"s": 0.5})]
+    agg = evaluate(Suite("p", "c", [Graded()], GatePolicy()), data).aggregates[0]
+    assert agg.breakdown is None

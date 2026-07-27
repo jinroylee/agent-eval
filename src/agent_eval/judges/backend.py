@@ -17,6 +17,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+DEFAULT_JUDGE_SYSTEM_PROMPT = "You are a strict, impartial evaluator."
+
 
 @dataclass(frozen=True)
 class JudgeRequest:
@@ -28,6 +30,7 @@ class JudgeRequest:
     reference: str = ""  # gold answer, if grading against ground truth
     context: Sequence[str] = field(default_factory=tuple)  # evidence (chunks, execution rows)
     scale: tuple[int, int] = (1, 5)  # integer score range the judge is asked to use
+    system_prompt: str = ""  # persona/framing preamble; "" -> the backend's default
 
 
 @dataclass(frozen=True)
@@ -59,14 +62,25 @@ class LLMJudge:
     The model is asked to answer with ``SCORE: <int>`` (in the request's scale) and ``REASON: ...``;
     the score is parsed and normalized to ``[0, 1]``. Provider-agnostic on purpose — wire Claude,
     GPT, or a local model by supplying the callable (see docs/judges.md).
+
+    The persona preamble is customizable: ``system_prompt`` here sets the backend-wide default and
+    ``JudgeRequest.system_prompt`` overrides it per request (the request wins). The rubric and the
+    ``SCORE:``/``REASON:`` format lines are always appended after it, so a custom system prompt can
+    never break score parsing.
     """
 
-    def __init__(self, complete: Callable[[str], str], name: str = "llm_judge") -> None:
+    def __init__(
+        self,
+        complete: Callable[[str], str],
+        name: str = "llm_judge",
+        system_prompt: str = DEFAULT_JUDGE_SYSTEM_PROMPT,
+    ) -> None:
         self._complete = complete
         self.name = name
+        self.system_prompt = system_prompt or DEFAULT_JUDGE_SYSTEM_PROMPT
 
     def evaluate(self, request: JudgeRequest) -> JudgeVerdict:
-        text = self._complete(self.render_prompt(request))
+        text = self._complete(self.render_prompt(request, self.system_prompt))
         score01, raw = self._parse(text, request.scale)
         reason = ""
         m = re.search(r"REASON:\s*(.+)", text, re.IGNORECASE | re.DOTALL)
@@ -75,10 +89,10 @@ class LLMJudge:
         return JudgeVerdict(score01, reason=reason, confidence=None)
 
     @staticmethod
-    def render_prompt(request: JudgeRequest) -> str:
+    def render_prompt(request: JudgeRequest, system_prompt: str = DEFAULT_JUDGE_SYSTEM_PROMPT) -> str:
         lo, hi = request.scale
         parts = [
-            "You are a strict, impartial evaluator.",
+            request.system_prompt or system_prompt,
             request.instruction,
             f"\nReturn your verdict as two lines exactly:"
             f"\nSCORE: <integer {lo}-{hi}>\nREASON: <one sentence>",

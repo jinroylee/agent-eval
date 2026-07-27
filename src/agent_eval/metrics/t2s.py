@@ -43,7 +43,12 @@ from agent_eval.core.metric import BaseMetric
 from agent_eval.core.registry import BuildContext, MetricRegistry
 from agent_eval.execution.compare import ResultSetPolicy, soft_f1
 from agent_eval.judges.backend import JudgeRequest
-from agent_eval.metrics.common import JudgeMetric, SelfConsistencyMetric, resolve_judge
+from agent_eval.metrics.common import (
+    JudgeMetric,
+    SelfConsistencyMetric,
+    judge_system_prompt,
+    resolve_judge,
+)
 
 # The judge never sees the raw result set (it may be enormous). Instead it sees a bounded
 # *statistical digest* whose size is O(columns), not O(rows): per-column aggregates + a small sample.
@@ -356,8 +361,9 @@ class _ExecutionJudgeMetric(JudgeMetric):
         sample_rows: int = _SAMPLE_ROWS,
         max_distinct: int = _MAX_DISTINCT,
         max_columns: int = _MAX_COLUMNS,
+        system_prompt: str = "",
     ) -> None:
-        super().__init__(backend, panel)
+        super().__init__(backend, panel, system_prompt=system_prompt)
         self.sample_rows = sample_rows
         self.max_distinct = max_distinct
         self.max_columns = max_columns
@@ -374,6 +380,7 @@ class _ExecutionJudgeMetric(JudgeMetric):
             question=str(ctx.input),
             response=str(ctx.output),
             context=tuple(digest),
+            system_prompt=self.system_prompt,
         )
 
 
@@ -419,6 +426,15 @@ def register(registry: MetricRegistry) -> None:
     registry.register("component_match", lambda p, ctx: ComponentMatch(_dialect(p, ctx)))
     registry.register("ast_valid", lambda p, ctx: AstValid(_dialect(p, ctx)))
     registry.register(
-        "t2s_faithfulness", lambda p, ctx: T2SFaithfulness(resolve_judge(ctx), ctx.panel, **_digest_params(p))
+        "t2s_faithfulness",
+        lambda p, ctx: T2SFaithfulness(
+            resolve_judge(ctx), ctx.panel,
+            system_prompt=judge_system_prompt(p, ctx), **_digest_params(p),
+        ),
     )
-    registry.register("t2s_consistency", lambda p, ctx: T2SConsistency(resolve_judge(ctx), ctx.panel))
+    registry.register(
+        "t2s_consistency",
+        lambda p, ctx: T2SConsistency(
+            resolve_judge(ctx), ctx.panel, system_prompt=judge_system_prompt(p, ctx)
+        ),
+    )

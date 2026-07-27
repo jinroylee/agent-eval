@@ -40,23 +40,26 @@ docker build --build-arg EXTRAS="server,t2s,bertscore" -t agent-eval-api .
 
 | 경로 | 메트릭 | 각 컨텍스트에 필요한 값 | `params` |
 |---|---|---|---|
-| `POST /common/llm_judge` | `llm_judge` | `input`, `output` (선택: `expected`) | `criteria`, `scale` |
+| `POST /common/llm_judge` | `llm_judge` | `input`, `output` (선택: `expected`) | `criteria`, `scale`, `system_prompt` |
 | `POST /common/bertscore` | `bertscore` | `output`, `expected` | `lang`, `model_type`, `rescale_with_baseline` |
 | `POST /rag/recall_at_k` | `recall_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/precision_at_k` | `precision_at_k` | `metadata.retrieved_ids`, `.relevant_ids` | `k` |
 | `POST /rag/ndcg_at_k` | `ndcg_at_k` | 동일 (+ 선택: `.relevance`) | `k` |
-| `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | — |
-| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (선택: `input`) | — |
+| `POST /rag/faithfulness` | `faithfulness` | `output`, `retrieved_context` | `system_prompt` |
+| `POST /rag/consistency` | `consistency` | `metadata.repeated_outputs` (선택: `input`) | `system_prompt` |
 | `POST /t2s/soft_f1` | `soft_f1` | `metadata.execution_result`, `.gold_execution_result` | `result_policy` |
 | `POST /t2s/component_match` | `component_match` | `metadata.sql`, `.gold_sql` | `dialect` |
 | `POST /t2s/ast_valid` | `ast_valid` | `metadata.sql` | `dialect` |
-| `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (선택: `input`) | `sample_rows`, `max_distinct`, `max_columns` |
-| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (선택: `input`) | — |
+| `POST /t2s/faithfulness` | `t2s_faithfulness` | `output`, `metadata.execution_result` (선택: `input`) | `sample_rows`, `max_distinct`, `max_columns`, `system_prompt` |
+| `POST /t2s/consistency` | `t2s_consistency` | `metadata.repeated_sql` (선택: `input`) | `system_prompt` |
 
 `result_policy`는 `ResultSetPolicy`의 필드를 그대로 받는다: `row_order`(`ignore|strict`),
 `duplicates`(`keep|dedup`), `nulls`(`distinct|coalesce`), `column_order`(`ignore|strict`),
-`float_tolerance`. 어떤 파라미터든 JSON `null`을 명시적으로 주면 "기본값을 사용한다"는 뜻이며,
-키를 생략한 것과 같다.
+`float_tolerance`. `criteria`(llm_judge)는 기준별 판정(기본 동작)을 위한 리스트 — 각 항목은 이름
+문자열 또는 `{name, description}` — 이거나, 종합 점수 1회 호출을 위한 일반 문자열 루브릭이다.
+`system_prompt`(judge 엔드포인트)는 이 요청에 한해 judge 페르소나 서문을 교체한다
+([judges.md](judges.md) 참고). 어떤 파라미터든 JSON `null`을 명시적으로 주면 "기본값을 사용한다"는
+뜻이며, 키를 생략한 것과 같다.
 
 ## 요청 / 응답
 
@@ -95,8 +98,11 @@ curl -s -X POST http://127.0.0.1:8000/rag/recall_at_k \
 통과율이고, 등급형(MEAN) 메트릭은 군집 강건(cluster-robust) 신뢰구간을 적용한 평균이다(서로 독립이
 아닌(non-iid) 항목에는 `metadata.cluster_id`를 설정한다). 모든 항목은 정확히 한 번씩만 채점되며,
 judge 엔드포인트는 전송된 컨텍스트마다 judge를 한 번씩만 실행한다(설정된 judge당 LLM 호출 1회 —
-PoLL 패널이면 항목마다 패널 크기만큼 호출된다). `n`은 전송된 컨텍스트 수를 세고, `aggregate.n`은
-실제로 채점된 항목만 센다(오류가 난 항목은 분모에서 제외된다).
+llm_judge의 기준별 기본 동작은 그 호출이 **기준마다** 일어나므로 컨텍스트당 5회이고, PoLL 패널이면
+패널 크기만큼 배수가 된다). `n`은 전송된 컨텍스트 수를 세고, `aggregate.n`은
+실제로 채점된 항목만 센다(오류가 난 항목은 분모에서 제외된다). 메트릭이 기준별 점수를 보고하면
+(llm_judge의 기본 동작) 각 항목의 `detail.criteria`에 그 점수가 담기고, 집계에는 기준별 평균이 담긴
+`breakdown` 필드가 추가된다.
 
 ## 오류 모델
 
@@ -116,6 +122,7 @@ PoLL 패널이면 항목마다 패널 크기만큼 호출된다). `n`은 전송�
 | `AGENT_EVAL_JUDGE_MODEL` | `{base_url}/chat/completions`로 보내는 모델 이름. |
 | `AGENT_EVAL_JUDGE_API_KEY` | 선택적인 `Authorization: Bearer` 토큰. |
 | `AGENT_EVAL_JUDGE_TIMEOUT` | judge HTTP 타임아웃(초 단위, 기본값 60). |
+| `AGENT_EVAL_JUDGE_SYSTEM_PROMPT` | 서버 전역 judge 페르소나 서문(openai 호환 judge에만 적용; 요청의 `system_prompt` 파라미터가 이를 재정의한다). 설정되면 `GET /health`의 judge 정보에 "custom system prompt"가 표시된다. |
 
 아무것도 설정하지 않으면 → 결정론적 어휘 중첩(lexical-overlap) **스텁**으로 동작한다(오프라인이며,
 실제 판정이 아니다). 어떤 judge가 활성인지는 `GET /health`가 보고한다 — judge 기반 점수를 신뢰하기
@@ -126,7 +133,8 @@ PoLL 패널이면 항목마다 패널 크기만큼 호출된다). `n`은 전송�
 - 인증/TLS가 없다 — 폐쇄망(closed network)을 전제로 만들어졌으므로, 외부 노출이 문제가 된다면
   게이트웨이를 앞단에 둔다.
 - 배치 크기 상한이 없다: 메모리와 지연 시간은 `len(contexts)`에 비례해 커지고, judge 엔드포인트는
-  항목마다 설정된 judge 수만큼 LLM을 호출한다(PoLL 패널이면 그만큼 배수가 되고, 일관성 엔드포인트는
+  항목마다 설정된 judge 수만큼 LLM을 호출한다(PoLL 패널이면 그만큼 배수가 되고, llm_judge의 기준별
+  기본 동작은 기준 수만큼 — 항목당 5회 — 배수가 되며, 일관성 엔드포인트는
   실행 쌍 N(N−1)/2만큼 추가로 배수가 된다). `--workers`로
   스케일 아웃한다(채점은 요청 단위로 동기 실행된다).
 - `uvicorn[standard]`는 컴파일된 휠(wheel)인 `uvloop`, `httptools`, `watchfiles`, `websockets`를

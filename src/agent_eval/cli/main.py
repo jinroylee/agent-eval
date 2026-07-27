@@ -99,6 +99,9 @@ def _print_report(result: SuiteResult, thresholds, ds_name: str) -> None:
         ci = f"[{agg.ci_low:.3f}, {agg.ci_high:.3f}]"
         value = _fmt_value(agg.value, agg.aggregation)
         typer.echo(f"{agg.metric:<22} {value}  {ci:>20}  {thr_s:>8}  {gate}{err}")
+        if agg.breakdown:  # per-criterion means (criteria-based judge metrics)
+            for name, mean in agg.breakdown.items():
+                typer.echo(f"  · {name:<20} {mean:>9.3f}")
 
     overall = "PASS" if result.verdict.passed else "FAIL"
     typer.echo(f"VERDICT: {typer.style(overall, bold=True)}")

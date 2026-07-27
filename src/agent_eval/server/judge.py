@@ -6,9 +6,10 @@ Precedence:
    ``path/to/file.py:attr``; may return a backend, a zero-arg callable, or a list = PoLL panel).
    Resolved through :func:`agent_eval.config.loader.resolve_judge`, so semantics never drift.
 2. ``AGENT_EVAL_JUDGE_BASE_URL`` + ``AGENT_EVAL_JUDGE_MODEL`` (+ optional ``_API_KEY``,
-   ``_TIMEOUT`` seconds) — any OpenAI-compatible ``/chat/completions`` (vLLM, an internal
-   gateway). The framework's own :class:`LLMJudge` renders the prompt and parses ``SCORE:``;
-   this module contributes only the ``complete(prompt) -> str`` callable.
+   ``_TIMEOUT`` seconds, ``_SYSTEM_PROMPT`` — the server-wide judge persona; a request's
+   ``system_prompt`` param overrides it) — any OpenAI-compatible ``/chat/completions`` (vLLM, an
+   internal gateway). The framework's own :class:`LLMJudge` renders the prompt and parses
+   ``SCORE:``; this module contributes only the ``complete(prompt) -> str`` callable.
 3. ``AGENT_EVAL_JUDGE_PROVIDER`` — a preset switch used when no explicit ``_BASE_URL`` is given:
    ``anthropic`` (Claude via Anthropic's OpenAI-compatible endpoint, needs ``ANTHROPIC_API_KEY``)
    or ``openai`` (needs ``OPENAI_API_KEY``); ``_MODEL`` overrides the preset's default model.
@@ -37,6 +38,7 @@ ENV_MODEL = "AGENT_EVAL_JUDGE_MODEL"
 ENV_API_KEY = "AGENT_EVAL_JUDGE_API_KEY"
 ENV_TIMEOUT = "AGENT_EVAL_JUDGE_TIMEOUT"
 ENV_PROVIDER = "AGENT_EVAL_JUDGE_PROVIDER"
+ENV_SYSTEM_PROMPT = "AGENT_EVAL_JUDGE_SYSTEM_PROMPT"
 
 # Preset endpoints the provider switch maps to (Anthropic via its OpenAI-compatible surface).
 _PROVIDER_PRESETS: dict[str, tuple[str, str, str]] = {
@@ -143,9 +145,12 @@ def resolve_judge_from_env(
             timeout = float(raw_timeout)
         except ValueError as exc:
             raise RuntimeError(f"{ENV_TIMEOUT}={raw_timeout!r} is not a number") from exc
+        system_prompt = env.get(ENV_SYSTEM_PROMPT, "")
+        if system_prompt:  # surfaced in /health so a custom persona is never invisible
+            detail_suffix += " (custom system prompt)"
         complete = openai_complete(base_url, model, api_key, timeout, transport)
         return ResolvedJudge(
-            LLMJudge(complete, name=model),
+            LLMJudge(complete, name=model, system_prompt=system_prompt),
             kind="openai_compatible",
             detail=f"{model} @ {base_url}{detail_suffix}",
         )

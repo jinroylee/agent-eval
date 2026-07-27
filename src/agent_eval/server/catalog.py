@@ -38,7 +38,7 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     EndpointSpec(
         family="common", name="llm_judge", type="llm_judge",
         requires=("input", "output"), optional=("expected",),
-        params=("criteria", "scale"), judge_based=True,
+        params=("criteria", "scale", "system_prompt"), judge_based=True,
     ),
     EndpointSpec(
         family="common", name="bertscore", type="bertscore",
@@ -60,11 +60,12 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     ),
     EndpointSpec(
         family="rag", name="faithfulness", type="faithfulness",
-        requires=("output", "retrieved_context"), judge_based=True,
+        requires=("output", "retrieved_context"), params=("system_prompt",), judge_based=True,
     ),
     EndpointSpec(
         family="rag", name="consistency", type="consistency",
-        optional=("input",), metadata_keys=("repeated_outputs",), judge_based=True,
+        optional=("input",), metadata_keys=("repeated_outputs",),
+        params=("system_prompt",), judge_based=True,
     ),
     EndpointSpec(
         family="t2s", name="soft_f1", type="soft_f1",
@@ -82,11 +83,13 @@ ENDPOINTS: tuple[EndpointSpec, ...] = (
     EndpointSpec(
         family="t2s", name="faithfulness", type="t2s_faithfulness",
         requires=("output",), optional=("input",), metadata_keys=("execution_result",),
-        params=("sample_rows", "max_distinct", "max_columns"), judge_based=True, extra="t2s",
+        params=("sample_rows", "max_distinct", "max_columns", "system_prompt"),
+        judge_based=True, extra="t2s",
     ),
     EndpointSpec(
         family="t2s", name="consistency", type="t2s_consistency",
-        optional=("input",), metadata_keys=("repeated_sql",), judge_based=True, extra="t2s",
+        optional=("input",), metadata_keys=("repeated_sql",),
+        params=("system_prompt",), judge_based=True, extra="t2s",
     ),
 )
 

@@ -30,10 +30,15 @@ registry = default_registry()   # 14 metric types (T2S included if `sqlglot` is 
 ### `llm_judge`
 
 응답을 **완전성(Completeness), 명확성(Clarity), 유용성(Usefulness), 관련성(Relevance), 친근함(Friendliness)**
-기준으로 채점한다(하나의 종합 1–5 점수, `[0, 1]`로 정규화). `expected`가 설정되면 해당 참조 기준으로 채점하고,
-없으면 내재적 품질을 채점한다. judge 백엔드가 필요하다 — [judges.md](judges.md) 참고. 설정된 judge가 없으면
-결정론적(deterministic) 오프라인 스텁으로 폴백한다. 파라미터: `criteria`(루브릭 재정의),
-`scale`(기본값 `(1, 5)`). **심판 패널(PoLL)**(여러 judge의 평균)을 지원한다 — `judge.factory`를
+기준으로 채점한다. 기본값으로 각 기준을 **개별적으로** 판정한다 — 기준마다 집중된 judge 호출 1회(항목당
+5회; PoLL 패널이면 그만큼 배수가 된다). 메트릭 점수는 기준별 점수의 평균이고(각각 1–5 점수를 `[0, 1]`로
+정규화), 기준별 점수는 항목별로 `detail['criteria']`에 담기며, `evaluate`가 이를 기준별 `breakdown`으로
+집계해 리포트에 표시한다. `expected`가 설정되면 해당 참조 기준으로 채점하고, 없으면 내재적 품질을
+채점한다. judge 백엔드가 필요하다 — [judges.md](judges.md) 참고. 설정된 judge가 없으면
+결정론적(deterministic) 오프라인 스텁으로 폴백한다. 파라미터: `criteria` — 기준별 판정을 위한 리스트(각
+항목은 이름 또는 `{name, description}`), 또는 **일반 문자열 루브릭**(종합 점수 1회 호출);
+`scale`(기본값 `(1, 5)`); `system_prompt`(judge 페르소나 재정의 — [judges.md](judges.md)).
+**심판 패널(PoLL)**(기준마다 여러 judge의 평균)을 지원한다 — `judge.factory`를
 리스트를 반환하는 함수로 설정한다.
 
 ### `bertscore`
@@ -67,7 +72,8 @@ extra가 필요하다. 표현이 다르지만 올바른 답변, 즉 정확 일�
 `recall_at_k`는 다운스트림의 모든 것에 상한을 씌우므로 보통 하드 게이트로 쓴다. `faithfulness`(모든
 주장이 검색된 청크로 *뒷받침되어야* 함)는 근거에 대해 judge로 채점한다. `consistency`는 **반복 실행에
 걸쳐** judge로 채점한다: 같은 질문을 N번 실행하고(`prediction.n_runs`) 답변의 모든 쌍(pair)이 서로
-일치하는지 판정한다 — 점수는 쌍별 평균이며, 질문당 judge 호출은 N(N−1)/2번이다. `ndcg_at_k`는 기본적으로 이진(binary)
+일치하는지 판정한다 — 점수는 쌍별 평균이며, 질문당 judge 호출은 N(N−1)/2번이다. 두 메트릭 모두
+`system_prompt` 파라미터를 받는다([judges.md](judges.md) 참고). `ndcg_at_k`는 기본적으로 이진(binary)
 관련도를 쓴다. 등급별 관련도를 원하면 `metadata['relevance']`(`{id: gain}`)를 전달한다.
 
 ---
@@ -91,7 +97,8 @@ SQL을 모두 실행하고 결과 집합을 비교한다(셀-백 F1로 부분 �
 *실제로 반환한* 것을 충실하게 보고하는지에만 국한된다. 결과 집합 비교는 명시적이고 설정 가능하다 —
 `defaults.result_set_policy`가 행 순서, 중복, NULL, 부동소수점 허용 오차(float tolerance)를 제어한다(실행
 메트릭에서 문서화된 조용한 실패(silent-failure)의 원인). 실행 메트릭의 파라미터: `dialect`, `result_policy`,
-`timeout_s`.
+`timeout_s`. judge 메트릭(`t2s_faithfulness`, `t2s_consistency`)은 `system_prompt` 파라미터도
+받는다([judges.md](judges.md) 참고).
 
 > T2S 예제([`examples/t2s`](../examples/t2s/))는 역할 분담을 보여주도록 구성되어 있다:
 > 패러프레이즈된 쿼리는 `soft_f1`을 1.0으로 유지하면서 `component_match`는 떨어뜨리고, `WHERE`가 누락되면

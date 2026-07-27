@@ -35,8 +35,11 @@ def test_catalog_t2s_paths_drop_the_redundant_prefix():
 def test_catalog_declares_params_and_judges():
     by_path = {spec.path: spec for spec in ENDPOINTS}
     assert by_path["/rag/recall_at_k"].params == ("k",)
-    assert by_path["/common/llm_judge"].params == ("criteria", "scale")
+    assert by_path["/common/llm_judge"].params == ("criteria", "scale", "system_prompt")
     assert by_path["/t2s/soft_f1"].params == ("result_policy",)
+    for s in ENDPOINTS:
+        if s.judge_based:
+            assert "system_prompt" in s.params, s.path
     judge_paths = {s.path for s in ENDPOINTS if s.judge_based}
     assert judge_paths == {
         "/common/llm_judge", "/rag/faithfulness", "/rag/consistency",
@@ -98,10 +101,11 @@ def test_result_and_aggregate_mirror_core_contracts():
     from agent_eval.core.contracts import Aggregation
 
     agg = AggregateOut.from_aggregate(
-        MetricAggregate("m", 0.8, 0.6, 0.9, 10, 2, Aggregation.MEAN, True)
+        MetricAggregate("m", 0.8, 0.6, 0.9, 10, 2, Aggregation.MEAN, True, {"Clarity": 0.9})
     )
     assert (agg.metric, agg.value, agg.ci_low, agg.ci_high) == ("m", 0.8, 0.6, 0.9)
     assert (agg.n, agg.n_errors, agg.aggregation, agg.higher_is_better) == (10, 2, "mean", True)
+    assert agg.breakdown == {"Clarity": 0.9}
 
 
 # --------------------------------------------------------------------------- judge resolution
@@ -193,7 +197,7 @@ def client(monkeypatch):
 
     for var in (
         judge_mod.ENV_FACTORY, judge_mod.ENV_BASE_URL, judge_mod.ENV_MODEL,
-        judge_mod.ENV_API_KEY, judge_mod.ENV_TIMEOUT,
+        judge_mod.ENV_API_KEY, judge_mod.ENV_TIMEOUT, judge_mod.ENV_SYSTEM_PROMPT,
     ):
         monkeypatch.delenv(var, raising=False)
     return TestClient(create_app())
@@ -626,3 +630,86 @@ def test_load_env_file_setdefault_semantics(tmp_path, monkeypatch):
     assert os.environ["AE_DEMO_NEW"] == "hello"
     monkeypatch.delenv("AE_DEMO_NEW")
     assert judge_mod.load_env_file(tmp_path / "missing.env") is False
+
+
+# --------------------------------------------------------------------------- system prompt + criteria
+def test_llm_judge_returns_criteria_breakdown(client):
+    body = client.post(
+        "/common/llm_judge",
+        json={"contexts": [{"input": "q", "output": "Paris", "expected": "Paris"}]},
+    ).json()
+    names = ["Completeness", "Clarity", "Usefulness", "Relevance", "Friendliness"]
+    assert list(body["results"][0]["detail"]["criteria"]) == names
+    assert body["aggregate"]["breakdown"] == {n: pytest.approx(1.0) for n in names}
+
+
+def test_holistic_string_criteria_omit_breakdown(client):
+    body = client.post(
+        "/common/llm_judge",
+        json={"contexts": [{"input": "q", "output": "Paris", "expected": "Paris"}],
+              "params": {"criteria": "Rate overall quality."}},
+    ).json()
+    assert "criteria" not in body["results"][0]["detail"]
+    assert body["aggregate"]["breakdown"] is None
+
+
+def test_system_prompt_param_accepted_on_judge_endpoints(client):
+    import importlib.util
+
+    payloads = {
+        "/common/llm_judge": {"input": "q", "output": "Paris", "expected": "Paris"},
+        "/rag/faithfulness": {"output": "x", "retrieved_context": ["x"]},
+        "/rag/consistency": {"input": "q", "metadata": {"repeated_outputs": ["a", "a"]}},
+    }
+    if importlib.util.find_spec("sqlglot"):
+        payloads["/t2s/faithfulness"] = {
+            "input": "q", "output": "3", "metadata": {"execution_result": [{"count": 3}]}
+        }
+        payloads["/t2s/consistency"] = {
+            "input": "q", "metadata": {"repeated_sql": ["SELECT 1", "SELECT 1"]}
+        }
+    for path, ctx in payloads.items():
+        resp = client.post(path, json={"contexts": [ctx], "params": {"system_prompt": "Persona."}})
+        assert resp.status_code == 200, (path, resp.text)
+        assert resp.json()["results"][0]["error"] is None
+
+
+def test_malformed_criteria_and_system_prompt_are_422(client):
+    for params in (
+        {"criteria": 42},
+        {"criteria": []},
+        {"criteria": [{"description": "no name"}]},
+        {"system_prompt": 42},
+    ):
+        resp = client.post(
+            "/common/llm_judge",
+            json={"contexts": [{"input": "q", "output": "a"}], "params": params},
+        )
+        assert resp.status_code == 422, params
+
+
+def test_env_system_prompt_applies_to_openai_compatible_judge():
+    import json as jsonlib
+
+    import httpx
+
+    from agent_eval.judges.backend import JudgeRequest
+    from agent_eval.server import judge as judge_mod
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = jsonlib.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "SCORE: 5"}}]})
+
+    resolved = judge_mod.resolve_judge_from_env(
+        environ={
+            "AGENT_EVAL_JUDGE_BASE_URL": "http://llm.test/v1",
+            "AGENT_EVAL_JUDGE_MODEL": "m",
+            "AGENT_EVAL_JUDGE_SYSTEM_PROMPT": "Server-wide persona.",
+        },
+        transport=httpx.MockTransport(handler),
+    )
+    assert "custom system prompt" in resolved.detail
+    resolved.backend.evaluate(JudgeRequest(instruction="i", response="r"))
+    assert captured["body"]["messages"][0]["content"].startswith("Server-wide persona.")

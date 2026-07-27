@@ -29,6 +29,7 @@ class MetricAggregate:
     n_errors: int
     aggregation: Aggregation
     higher_is_better: bool = True
+    breakdown: Mapping[str, float] | None = None  # per-criterion means (criteria-based judge metrics)
 
 
 def _meets(value: float, threshold: float, higher_is_better: bool) -> bool:

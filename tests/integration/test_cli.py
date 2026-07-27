@@ -86,3 +86,6 @@ suites:
     assert (tmp_path / "pred.jsonl").exists()
     ev = runner.invoke(app, ["evaluate", "-c", str(tmp_path / "c.yaml")])
     assert ev.exit_code == 0, ev.stdout
+    # llm_judge's per-criteria default surfaces as indented sub-rows under the metric row
+    for criterion in ("Completeness", "Clarity", "Usefulness", "Relevance", "Friendliness"):
+        assert f"· {criterion}" in ev.stdout, ev.stdout
