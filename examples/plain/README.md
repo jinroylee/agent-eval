@@ -3,6 +3,11 @@
 A single-shot Q&A agent — no retrieval, no tools. The **common** metrics carry the evaluation:
 response quality (`llm_judge`), tail latency (`p95_latency`), and cost (`token_usage`).
 
+The config also shows the judge customization knobs: a custom `system_prompt` (replaces the
+default "You are a strict, impartial evaluator." persona) and custom `criteria`
+(Accuracy / Actionability / Tone instead of the default five) — each criterion is judged with
+its own focused call and reported separately. See `docs/judges.md`.
+
 ## Files
 
 | File | What it is |
@@ -35,11 +40,16 @@ Expected (the offline stub judge; numbers vary slightly):
 === plain/response  dataset=predictions  n=5 ===
 metric                     value                95% CI       thr  gate
 llm_judge                  0.814        [0.450, 1.000]      0.50  PASS
+  · Accuracy                 0.814
+  · Actionability            0.814
+  · Tone                     0.814
 p95_latency                  1.9        [0.300, 2.250]   2000.00  PASS
 token_usage               17.400      [12.047, 22.753]         -  info
 VERDICT: PASS
 ```
 
 `llm_judge` is below 1.0 because one gold question (`export my data`) has no answer in the agent's
-tiny knowledge base, so it falls back — exactly the kind of gap the gate is meant to catch. Swap in
-a real Claude judge (see [`../judges.py`](../judges.py)) for a meaningful quality score.
+tiny knowledge base, so it falls back — exactly the kind of gap the gate is meant to catch. The
+`·` sub-rows are the per-criterion means; the offline stub ignores rubrics, so it scores every
+criterion identically — swap in a real Claude judge (see [`../judges.py`](../judges.py)) for a
+meaningful quality score and genuinely differentiated criteria.

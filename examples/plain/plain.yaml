@@ -28,10 +28,20 @@ suites:
   response:
     dataset: predictions
     metrics:
-      - llm_judge                         # subjective quality (Completeness/Clarity/Usefulness/...)
+      - type: llm_judge                   # subjective quality, judged per criterion (one call each)
+        params:
+          # Replaces the default judge persona ("You are a strict, impartial evaluator.").
+          # Set `defaults: {system_prompt: ...}` instead to apply one persona to every judge metric.
+          system_prompt: "You are a meticulous evaluator for a customer-support assistant. Grade strictly and reward answers a customer could act on immediately."
+          criteria:                       # replaces the default 5 (Completeness/Clarity/Usefulness/...)
+            - Accuracy                    # a bare name works...
+            - name: Actionability        # ...or a name + description that is fed to the judge
+              description: gives the concrete steps or location the customer needs
+            - name: Tone
+              description: polite, professional support voice
       - p95_latency                       # tail latency (ms), lower is better
       - token_usage                       # mean tokens/query, lower is better
       # - bertscore                       # similarity to reference; needs: uv sync --extra bertscore
     gate:
-      thresholds: {llm_judge: 0.5, p95_latency: 2000.0}
+      thresholds: {llm_judge: 0.5, p95_latency: 2000.0}   # threshold gates the overall (mean) score
       require_pass: [llm_judge]
